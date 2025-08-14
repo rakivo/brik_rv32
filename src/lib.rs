@@ -461,7 +461,7 @@ impl I {
     }
 
     /// - im_b (branch offset, bytes): 13-bit signed, LSB must be 0 (2-byte alignment)
-    /// Layout into instr bits:
+    /// - Layout into instr bits:
     ///   imm[12]   -> bit 31
     ///   imm[10:5] -> bits 30:25
     ///   imm[4:1]  -> bits 11:8
@@ -511,7 +511,7 @@ impl I {
     }
 
     /// - im_j (jump offset, bytes): 21-bit signed, LSB must be 0 (2-byte alignment)
-    /// Layout into instr bits (rd + opcode already standard):
+    /// - Layout into instr bits (rd + opcode already standard):
     ///   imm[20]    -> bit 31
     ///   imm[10:1]  -> bits 30:21
     ///   imm[11]    -> bit 20
