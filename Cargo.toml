@@ -1,5 +1,5 @@
 [package]
-name = "asm_riscv"
+name = "brik_rv32"
 version = "0.2.0"
 license = "Apache-2.0 OR BSL-1.0 OR MIT"
 description = "RISC-V Assembly Encoder / Decoder."
