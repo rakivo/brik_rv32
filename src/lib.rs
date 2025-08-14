@@ -357,7 +357,13 @@ impl I {
         let d = Reg::from_u32((instruction & (0b11111 << 7)) >> 7);
         let funct3 = (instruction & (0b111 << 12)) >> 12;
         let s = Reg::from_u32((instruction & (0b11111 << 15)) >> 15);
-        let im = ((instruction >> 20) as u16) as i16;
+        let im_bits = (instruction >> 20) & 0xFFF;
+        let im = if (im_bits & 0x800) != 0 {
+            // negative: sign extend
+            (im_bits | 0xFFFFF000) as i32
+        } else {
+            im_bits as i32
+        } as i16;
         (d, funct3, s, im)
     }
 
@@ -424,72 +430,171 @@ impl I {
         let s1 = Reg::from_u32((instruction & (0b11111 << 15)) >> 15);
         let s2 = Reg::from_u32((instruction & (0b11111 << 20)) >> 20);
         im |= ((instruction >> 25) as u16) << 5;
-        (funct3, s1, s2, im as i16)
+        let im_signed = if (im & 0x800) != 0 {
+            // negative: sign extend
+            (im | 0xF000) as i16
+        } else {
+            im as i16
+        };
+        (funct3, s1, s2, im_signed)
     }
 
-    /// - im:    20
+    /// - im:    20 (simm20)
     /// - dst:    5
-    /// - opcode  7
+    /// - opcode: 7
     #[inline(always)]
     pub const fn u(opcode: u32, d: Reg, im: i32) -> u32 {
-        let im  = im as u32;
+        // mask to lower 20 bits (two's complement if im negative)
+        let im20 = (im as u32) & 0xFFFFF;
         let dst = d as u32;
-        let mut out = opcode;
-        out |= dst << 7;
-        out |= im << 12;
-        out
+        opcode | (dst << 7) | (im20 << 12)
     }
 
     #[inline(always)]
     pub const fn from_u(instruction: u32) -> (Reg, i32) {
+        let d = Reg::from_u32((instruction >> 7) & 0b11111);
+        // extract 20-bit field
+        let im20 = ((instruction >> 12) & 0xFFFFF) as i32;
+        // sign-extend 20 bits into i32
+        let imm_signed = (im20 << 12) >> 12;
+        (d, imm_signed)
+    }
+
+    /// - im_b (branch offset, bytes): 13-bit signed, LSB must be 0 (2-byte alignment)
+    /// Layout into instr bits:
+    ///   imm[12]   -> bit 31
+    ///   imm[10:5] -> bits 30:25
+    ///   imm[4:1]  -> bits 11:8
+    ///   imm[11]   -> bit 7
+    /// - src2:   5
+    /// - src1:   5
+    /// - funct3: 3
+    /// - opcode: 7
+    #[inline(always)]
+    pub const fn b(opcode: u32, funct3: u32, s1: Reg, s2: Reg, im_b: i16) -> u32 {
+        let imm = (im_b as i32 as u32) & 0x1FFF; // keep 13 bits
+        let src1 = s1 as u32;
+        let src2 = s2 as u32;
+
+        let mut out = opcode;
+        out |= ((imm >> 11) & 0x1) << 7;    // imm[11]   -> bit 7
+        out |= ((imm >> 1)  & 0xF) << 8;    // imm[4:1]  -> bits 11:8
+        out |= funct3 << 12;
+        out |= src1 << 15;
+        out |= src2 << 20;
+        out |= ((imm >> 5)  & 0x3F) << 25;  // imm[10:5] -> bits 30:25
+        out |= ((imm >> 12) & 0x1) << 31;   // imm[12]   -> bit 31
+        out
+    }
+
+    #[inline(always)]
+    pub const fn from_b(instruction: u32) -> (u32, Reg, Reg, i16) {
+        let mut imm = 0u32;
+
+        // rebuild 13-bit immediate
+        imm |= ((instruction >> 7)  & 0x1)  << 11; // bit 7 -> imm[11]
+        imm |= ((instruction >> 8)  & 0xF)  << 1;  // bits 11:8 -> imm[4:1]
+        imm |= ((instruction >> 25) & 0x3F) << 5;  // bits 30:25 -> imm[10:5]
+        imm |= ((instruction >> 31) & 0x1)  << 12; // bit 31 -> imm[12]
+
+        // Sign-extend 13-bit to i16
+        let imm_signed = if (imm & (1 << 12)) != 0 {
+            (imm | 0xFFFF_E000) as i32
+        } else {
+            imm as i32
+        } as i16;
+
+        let funct3 = (instruction & (0b111 << 12)) >> 12;
+        let s1 = Reg::from_u32((instruction & (0b11111 << 15)) >> 15);
+        let s2 = Reg::from_u32((instruction & (0b11111 << 20)) >> 20);
+        (funct3, s1, s2, imm_signed)
+    }
+
+    /// - im_j (jump offset, bytes): 21-bit signed, LSB must be 0 (2-byte alignment)
+    /// Layout into instr bits (rd + opcode already standard):
+    ///   imm[20]    -> bit 31
+    ///   imm[10:1]  -> bits 30:21
+    ///   imm[11]    -> bit 20
+    ///   imm[19:12] -> bits 19:12
+    /// - dst: 5
+    /// - opcode: 7
+    #[inline(always)]
+    pub const fn j(opcode: u32, d: Reg, im_j: i32) -> u32 {
+        // treat im_j as 21-bit signed (bits 20:0), bit 0 must be zero.
+        let imm = (im_j as u32) & 0x001F_FFFF; // keep 21 bits
+        let dst = d as u32;
+        let mut out = opcode;
+        out |= dst << 7;
+        // imm fields
+        out |= imm & 0x000F_F000;           // imm[19:12] -> bits 19:12 (already aligned)
+        out |= ((imm >> 11) & 0x1)   << 20; // imm[11]    -> bit 20
+        out |= ((imm >> 1)  & 0x3FF) << 21; // imm[10:1]  -> bits 30:21
+        out |= ((imm >> 20) & 0x1)   << 31; // imm[20]    -> bit 31
+        out
+    }
+
+    #[inline(always)]
+    pub const fn from_j(instruction: u32) -> (Reg, i32) {
         let d = Reg::from_u32((instruction & (0b11111 << 7)) >> 7);
-        let im = instruction >> 12;
-        (d, im as i32)
+        let mut imm = 0u32;
+        imm |= instruction & 0x000F_F000;          // bits 19:12 -> imm[19:12]
+        imm |= ((instruction >> 20) & 0x1) << 11;  // bit 20     -> imm[11]
+        imm |= ((instruction >> 21) & 0x3FF) << 1; // bits 30:21 -> imm[10:1]
+        imm |= ((instruction >> 31) & 0x1) << 20;  // bit 31     -> imm[20]
+
+        // sign-extend 21-bit to i32
+        let imm_signed = if (imm & (1 << 20)) != 0 {
+            imm | 0xFFE0_0000
+        } else {
+            imm
+        };
+
+        (d, imm_signed as _)
     }
 
     #[inline]
     pub const fn into_u32(self) -> u32 {
         match self {
-            LUI { d, im }       => I::u(0b0110111, d, im),
-            AUIPC { d, im }     => I::u(0b0010111, d, im),
-            JAL { d, im }       => I::u(0b1101111, d, im),
-            JALR { d, s, im }   => I::i(0b1100111, d, 0b000, s, im),
-            BEQ { s1, s2, im }  => I::s(0b1100011, 0b000, s1, s2, im),
-            BNE { s1, s2, im }  => I::s(0b1100011, 0b001, s1, s2, im),
-            BLT { s1, s2, im }  => I::s(0b1100011, 0b100, s1, s2, im),
-            BGE { s1, s2, im }  => I::s(0b1100011, 0b101, s1, s2, im),
-            BLTU { s1, s2, im } => I::s(0b1100011, 0b110, s1, s2, im),
-            BGEU { s1, s2, im } => I::s(0b1100011, 0b111, s1, s2, im),
-            LB { d, s, im }     => I::i(0b0000011, d, 0b000, s, im),
-            LH { d, s, im }     => I::i(0b0000011, d, 0b001, s, im),
-            LW { d, s, im }     => I::i(0b0000011, d, 0b010, s, im),
-            LBU { d, s, im }    => I::i(0b0000011, d, 0b100, s, im),
-            LHU { d, s, im }    => I::i(0b0000011, d, 0b101, s, im),
-            ADDI { d, s, im }   => I::i(0b0010011, d, 0b000, s, im),
-            SLTI { d, s, im }   => I::i(0b0010011, d, 0b010, s, im),
-            SLTUI { d, s, im }  => I::i(0b0010011, d, 0b011, s, im),
-            XORI { d, s, im }   => I::i(0b0010011, d, 0b100, s, im),
-            ORI { d, s, im }    => I::i(0b0010011, d, 0b110, s, im),
-            ANDI { d, s, im }   => I::i(0b0010011, d, 0b111, s, im),
-            SLLI { d, s, im }   => I::i7(0b0010011, d, 0b001, s, im, 0b0000000),
-            SRLI { d, s, im }   => I::i7(0b0010011, d, 0b101, s, im, 0b0000000),
-            SRAI { d, s, im }   => I::i7(0b0010011, d, 0b101, s, im, 0b0100000),
-            SB { s1, s2, im }   => I::s(0b0100011, 0b000, s1, s2, im),
-            SH { s1, s2, im }   => I::s(0b0100011, 0b001, s1, s2, im),
-            SW { s1, s2, im }   => I::s(0b0100011, 0b010, s1, s2, im),
-            ADD { d, s1, s2 }   => I::r(0b0110011, d, 0b000, s1, s2, 0b0000000),
-            SUB { d, s1, s2 }   => I::r(0b0110011, d, 0b000, s1, s2, 0b0100000),
-            SLL { d, s1, s2 }   => I::r(0b0110011, d, 0b001, s1, s2, 0b0000000),
-            SLT { d, s1, s2 }   => I::r(0b0110011, d, 0b010, s1, s2, 0b0000000),
-            SLTU { d, s1, s2 }  => I::r(0b0110011, d, 0b011, s1, s2, 0b0000000),
-            XOR { d, s1, s2 }   => I::r(0b0110011, d, 0b100, s1, s2, 0b0000000),
-            SRL { d, s1, s2 }   => I::r(0b0110011, d, 0b101, s1, s2, 0b0000000),
-            SRA { d, s1, s2 }   => I::r(0b0110011, d, 0b101, s1, s2, 0b0100000),
-            OR { d, s1, s2 }    => I::r(0b0110011, d, 0b110, s1, s2, 0b0000000),
-            AND { d, s1, s2 }   => I::r(0b0110011, d, 0b111, s1, s2, 0b0000000),
-            ECALL {}            => I::i(0b1110011, ZERO, 0b000, ZERO, 0b000000000000),
-            EBREAK {}           => I::i(0b1110011, ZERO, 0b000, ZERO, 0b000000000001),
-            FENCE { im }        => I::i(0b0001111, ZERO, 0b000, ZERO, im),
+            LUI { d, im }       => I::u(0b0110111,  d,     im),
+            AUIPC { d, im }     => I::u(0b0010111,  d,     im),
+            JAL { d, im }       => I::u(0b1101111,  d,     im),
+            JALR { d, s, im }   => I::i(0b1100111,  d,     0b000, s,    im),
+            BEQ { s1, s2, im }  => I::s(0b1100011,  0b000, s1,    s2,   im),
+            BNE { s1, s2, im }  => I::s(0b1100011,  0b001, s1,    s2,   im),
+            BLT { s1, s2, im }  => I::s(0b1100011,  0b100, s1,    s2,   im),
+            BGE { s1, s2, im }  => I::s(0b1100011,  0b101, s1,    s2,   im),
+            BLTU { s1, s2, im } => I::s(0b1100011,  0b110, s1,    s2,   im),
+            BGEU { s1, s2, im } => I::s(0b1100011,  0b111, s1,    s2,   im),
+            LB { d, s, im }     => I::i(0b0000011,  d,     0b00   0,    s,  im),
+            LH { d, s, im }     => I::i(0b0000011,  d,     0b001, s,    im),
+            LW { d, s, im }     => I::i(0b0000011,  d,     0b010, s,    im),
+            LBU { d, s, im }    => I::i(0b0000011,  d,     0b100, s,    im),
+            LHU { d, s, im }    => I::i(0b0000011,  d,     0b101, s,    im),
+            ADDI { d, s, im }   => I::i(0b0010011,  d,     0b000, s,    im),
+            SLTI { d, s, im }   => I::i(0b0010011,  d,     0b010, s,    im),
+            SLTUI { d, s, im }  => I::i(0b0010011,  d,     0b011, s,    im),
+            XORI { d, s, im }   => I::i(0b0010011,  d,     0b100, s,    im),
+            ORI { d, s, im }    => I::i(0b0010011,  d,     0b110, s,    im),
+            ANDI { d, s, im }   => I::i(0b0010011,  d,     0b111, s,    im),
+            SLLI { d, s, im }   => I::i7(0b0010011, d,     0b001, s,    im, 0b0000000),
+            SRLI { d, s, im }   => I::i7(0b0010011, d,     0b101, s,    im, 0b0000000),
+            SRAI { d, s, im }   => I::i7(0b0010011, d,     0b101, s,    im, 0b0100000),
+            SB { s1, s2, im }   => I::s(0b0100011,  0b000, s1,    s2,   im),
+            SH { s1, s2, im }   => I::s(0b0100011,  0b001, s1,    s2,   im),
+            SW { s1, s2, im }   => I::s(0b0100011,  0b010, s1,    s2,   im),
+            ADD { d, s1, s2 }   => I::r(0b0110011,  d,     0b000, s1,   s2, 0b0000000),
+            SUB { d, s1, s2 }   => I::r(0b0110011,  d,     0b000, s1,   s2, 0b0100000),
+            SLL { d, s1, s2 }   => I::r(0b0110011,  d,     0b001, s1,   s2, 0b0000000),
+            SLT { d, s1, s2 }   => I::r(0b0110011,  d,     0b010, s1,   s2, 0b0000000),
+            SLTU { d, s1, s2 }  => I::r(0b0110011,  d,     0b011, s1,   s2, 0b0000000),
+            XOR { d, s1, s2 }   => I::r(0b0110011,  d,     0b100, s1,   s2, 0b0000000),
+            SRL { d, s1, s2 }   => I::r(0b0110011,  d,     0b101, s1,   s2, 0b0000000),
+            SRA { d, s1, s2 }   => I::r(0b0110011,  d,     0b101, s1,   s2, 0b0100000),
+            OR { d, s1, s2 }    => I::r(0b0110011,  d,     0b110, s1,   s2, 0b0000000),
+            AND { d, s1, s2 }   => I::r(0b0110011,  d,     0b111, s1,   s2, 0b0000000),
+            ECALL {}            => I::i(0b1110011,  ZERO,  0b000, ZERO, 0b000000000000),
+            EBREAK {}           => I::i(0b1110011,  ZERO,  0b000, ZERO, 0b000000000001),
+            FENCE { im }        => I::i(0b0001111,  ZERO,  0b000, ZERO, im),
         }
     }
 }
@@ -559,7 +664,7 @@ impl TryFrom<u32> for I {
                     (d, 0b001, s, im, 0b0000000) => SLLI { d, s, im },
                     (d, 0b101, s, im, 0b0000000) => SRLI { d, s, im },
                     (d, 0b101, s, im, 0b0100000) => SRAI { d, s, im },
-                    (_, funct, _, _, _) => {
+                    (_, funct, ..) => {
                         return Err(ConversionError::UnknownFunct3(funct))
                     }
                 },
@@ -621,5 +726,372 @@ impl TryFrom<u32> for I {
             },
             o => return Err(ConversionError::UnknownOpcode(o)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_b_type_roundtrip() {
+        // test positive offset
+        let encoded = I::b(0b1100011, 0b000, RA, SP, 0x100);
+        let (funct3, s1, s2, offset) = I::from_b(encoded);
+        assert_eq!(funct3, 0b000);
+        assert_eq!(s1, RA);
+        assert_eq!(s2, SP);
+        assert_eq!(offset, 0x100);
+
+        // Test negative offset
+        let encoded = I::b(0b1100011, 0b000, RA, SP, -256);
+        let (.., offset) = I::from_b(encoded);
+        assert_eq!(offset, -256);
+
+        // test edge case: maximum positive 13-bit offset (4094, since LSB must be 0)
+        let encoded = I::b(0b1100011, 0b001, T0, T1, 4094);
+        let (funct3, s1, s2, offset) = I::from_b(encoded);
+        assert_eq!(funct3, 0b001);
+        assert_eq!(s1, T0);
+        assert_eq!(s2, T1);
+        assert_eq!(offset, 4094);
+
+        // test edge case: maximum negative 13-bit offset (-4096)
+        let encoded = I::b(0b1100011, 0b111, A0, A1, -4096);
+        let (funct3, s1, s2, offset) = I::from_b(encoded);
+        assert_eq!(funct3, 0b111);
+        assert_eq!(s1, A0);
+        assert_eq!(s2, A1);
+        assert_eq!(offset, -4096);
+    }
+
+    #[test]
+    fn test_j_type_roundtrip() {
+        // test simple cases first
+        let test_cases = [
+            0,
+            2,       // minimum non-zero (LSB must be 0)
+            0x800,   // bit 11 set
+            0x1000,  // bit 12 set
+            0x2000,  // bit 13 set
+            -2,      // simple negative
+            -0x800,  // negative with bit 11
+            -0x1000, // negative with bit 12
+        ];
+
+        for &offset in &test_cases {
+            let encoded = I::j(0b1101111, RA, offset);
+            let (d, decoded_offset) = I::from_j(encoded);
+            assert_eq!(d, RA);
+            assert_eq!(decoded_offset, offset, "Failed for offset {:#x} ({})", offset, offset);
+        }
+
+        // test edge case: maximum positive 21-bit offset (1048574, since LSB must be 0)
+        let encoded = I::j(0b1101111, T6, 1048574);
+        let (d, offset) = I::from_j(encoded);
+        assert_eq!(d, T6);
+        assert_eq!(offset, 1048574);
+
+        // test edge case: maximum negative 21-bit offset (-1048576)
+        let encoded = I::j(0b1101111, S11, -1048576);
+        let (d, offset) = I::from_j(encoded);
+        assert_eq!(d, S11);
+        assert_eq!(offset, -1048576);
+    }
+
+    #[test]
+    fn test_r_type_roundtrip() {
+        // test R-type instructions (ADD, SUB, etc.)
+        let test_cases = [
+            (T0, T1, T2),
+            (ZERO, RA, SP),
+            (A0, A1, S0),
+            (T6, S11, GP),
+        ];
+
+        for &(rd, rs1, rs2) in &test_cases {
+            // test ADD (funct7=0b0000000, funct3=0b000)
+            let encoded = I::r(0b0110011, rd, 0b000, rs1, rs2, 0b0000000);
+            let (d, funct3, s1, s2, funct7) = I::from_r(encoded);
+            assert_eq!(d, rd);
+            assert_eq!(funct3, 0b000);
+            assert_eq!(s1, rs1);
+            assert_eq!(s2, rs2);
+            assert_eq!(funct7, 0b0000000);
+
+            // test SUB (funct7=0b0100000, funct3=0b000)
+            let encoded = I::r(0b0110011, rd, 0b000, rs1, rs2, 0b0100000);
+            let (d, funct3, s1, s2, funct7) = I::from_r(encoded);
+            assert_eq!(d, rd);
+            assert_eq!(funct3, 0b000);
+            assert_eq!(s1, rs1);
+            assert_eq!(s2, rs2);
+            assert_eq!(funct7, 0b0100000);
+        }
+    }
+
+    #[test]
+    fn test_i_type_roundtrip() {
+        // test I-type instructions (ADDI, LW, etc.)
+        let test_cases = [
+            (T0, T1, 0i16),
+            (A0, SP, 100i16),
+            (S0, RA, -50i16),
+            (T6, ZERO, 2047i16), // max positive 12-bit
+            (GP, T2, -2048i16),  // max negative 12-bit
+        ];
+
+        for &(rd, rs1, imm) in &test_cases {
+            // test ADDI (funct3=0b000)
+            let encoded = I::i(0b0010011, rd, 0b000, rs1, imm);
+            let (d, funct3, s1, decoded_imm) = I::from_i(encoded);
+            assert_eq!(d, rd);
+            assert_eq!(funct3, 0b000);
+            assert_eq!(s1, rs1);
+            assert_eq!(decoded_imm, imm);
+
+            // test LW (funct3=0b010)
+            let encoded = I::i(0b0000011, rd, 0b010, rs1, imm);
+            let (d, funct3, s1, decoded_imm) = I::from_i(encoded);
+            assert_eq!(d, rd);
+            assert_eq!(funct3, 0b010);
+            assert_eq!(s1, rs1);
+            assert_eq!(decoded_imm, imm);
+        }
+    }
+
+    #[test]
+    fn test_i7_type_roundtrip() {
+        // test I7-type instructions (SLLI, SRLI, SRAI)
+        let test_cases = [
+            (T0, T1, 0i8),
+            (A0, SP, 15i8),
+            (S0, RA, 31i8), // max shift amount
+            (T6, ZERO, 1i8),
+        ];
+
+        for &(rd, rs1, shamt) in &test_cases {
+            // test SLLI (funct7=0b0000000, funct3=0b001)
+            let encoded = I::i7(0b0010011, rd, 0b001, rs1, shamt, 0b0000000);
+            let (d, funct3, s1, decoded_shamt, funct7) = I::from_i7(encoded);
+            assert_eq!(d, rd);
+            assert_eq!(funct3, 0b001);
+            assert_eq!(s1, rs1);
+            assert_eq!(decoded_shamt, shamt);
+            assert_eq!(funct7, 0b0000000);
+
+            // test SRAI (funct7=0b0100000, funct3=0b101)
+            let encoded = I::i7(0b0010011, rd, 0b101, rs1, shamt, 0b0100000);
+            let (d, funct3, s1, decoded_shamt, funct7) = I::from_i7(encoded);
+            assert_eq!(d, rd);
+            assert_eq!(funct3, 0b101);
+            assert_eq!(s1, rs1);
+            assert_eq!(decoded_shamt, shamt);
+            assert_eq!(funct7, 0b0100000);
+        }
+    }
+
+    #[test]
+    fn test_s_type_roundtrip() {
+        // test S-type instructions (SW, SH, SB)
+        let test_cases = [
+            (T1, T2, 0i16),
+            (SP, A0, 100i16),
+            (RA, S0, -50i16),
+            (ZERO, T6, 2047i16),    // max positive 12-bit
+            (T2, GP, -2048i16),     // max negative 12-bit
+        ];
+
+        for &(rs1, rs2, imm) in &test_cases {
+            // test SW (funct3=0b010)
+            let encoded = I::s(0b0100011, 0b010, rs1, rs2, imm);
+            let (funct3, s1, s2, decoded_imm) = I::from_s(encoded);
+            assert_eq!(funct3, 0b010);
+            assert_eq!(s1, rs1);
+            assert_eq!(s2, rs2);
+            assert_eq!(decoded_imm, imm);
+
+            // test SB (funct3=0b000)
+            let encoded = I::s(0b0100011, 0b000, rs1, rs2, imm);
+            let (funct3, s1, s2, decoded_imm) = I::from_s(encoded);
+            assert_eq!(funct3, 0b000);
+            assert_eq!(s1, rs1);
+            assert_eq!(s2, rs2);
+            assert_eq!(decoded_imm, imm);
+        }
+    }
+
+    #[test]
+    fn test_sign_extension_u_type() {
+        // test positive values
+        let encoded = I::u(0b0110111, T0, 0x12345);
+        let (_, decoded) = I::from_u(encoded);
+        assert_eq!(decoded, 0x12345);
+
+        // test negative values (LUI/AUIPC usage often uses signed semantics)
+        let encoded = I::u(0b0110111, T0, -1);
+        let (_, decoded) = I::from_u(encoded);
+        assert_eq!(decoded, -1);
+
+        // test positive boundary (max positive signed 20-bit)
+        let encoded = I::u(0b0110111, T0, 0x7FFFF); // 524_287
+        let (_, decoded) = I::from_u(encoded);
+        assert_eq!(decoded, 0x7FFFF);
+
+        // test sign bit boundary (bit 19 set => smallest negative)
+        let encoded = I::u(0b0110111, T0, -524_288); // -2^19
+        let (_, decoded) = I::from_u(encoded);
+        assert_eq!(decoded, -524_288);
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // test register boundary cases
+        let all_regs = [
+            ZERO, RA, SP, GP, TP,
+            T0, T1, T2, S0, S1,
+            A0, A1, A2, A3, A4,
+            A5, A6, A7, S2, S3,
+            S4, S5, S6, S7, S8,
+            S9, S10, S11, T3, T4,
+            T5, T6,
+        ];
+
+        // test that all 32 registers encode/decode correctly
+        for (i, &reg) in all_regs.iter().enumerate() {
+            let encoded = I::r(0b0110011, reg, 0b000, ZERO, ZERO, 0b0000000);
+            let (d, .., _) = I::from_r(encoded);
+            assert_eq!(d, reg);
+            assert_eq!(reg as u32, i as u32);
+        }
+
+        // test immediate value boundaries for I-type
+        let i_boundary_tests = [
+            2047i16,   // max positive 12-bit signed
+            -2048i16,  // max negative 12-bit signed
+            0i16,      // zero
+            1i16,      // small positive
+            -1i16,     // small negative
+        ];
+
+        for &imm in &i_boundary_tests {
+            let encoded = I::i(0b0010011, T0, 0b000, T1, imm);
+            let (.., decoded_imm) = I::from_i(encoded);
+            assert_eq!(decoded_imm, imm);
+        }
+    }
+
+    #[test]
+    fn debug_j_type_no_std() {
+        let offset = 0x1000i32; // 4096
+
+        let encoded = I::j(0b1101111, RA, offset);
+
+        // let's manually check the bit fields
+        let imm_bits_31 = (encoded >> 31) & 0x1;
+        let imm_bits_30_21 = (encoded >> 21) & 0x3FF;
+        let imm_bit_20 = (encoded >> 20) & 0x1;
+        let imm_bits_19_12 = (encoded >> 12) & 0xFF;
+
+        let (d, decoded_offset) = I::from_j(encoded);
+
+        assert_eq!(d, RA);
+
+        // for 0x1000, we expect:
+        // - imm[12] = 1 (bit 12 of 0x1000)
+        // - All other bits = 0
+        // so imm[19:12] should be 0x01
+        assert_eq!(imm_bits_19_12, 0x01); // bit 12 of original -> bit 0 of this field
+        assert_eq!(imm_bits_30_21, 0);    // imm[10:1] should be 0
+        assert_eq!(imm_bit_20, 0);        // imm[11] should be 0
+        assert_eq!(imm_bits_31, 0);       // imm[20] should be 0 (positive number)
+
+        assert_eq!(decoded_offset, offset);
+    }
+
+    #[test]
+    fn test_sign_extension_i_type() {
+        // test positive values
+        let encoded = I::i(0b0010011, T0, 0b000, T1, 100);
+        let (.., decoded) = I::from_i(encoded);
+        assert_eq!(decoded, 100);
+
+        // test negative values
+        let encoded = I::i(0b0010011, T0, 0b000, T1, -50);
+        let (.., decoded) = I::from_i(encoded);
+        assert_eq!(decoded, -50);
+
+        // test boundary values
+        let encoded = I::i(0b0010011, T0, 0b000, T1, 2047);  // max positive 12-bit
+        let (.., decoded) = I::from_i(encoded);
+        assert_eq!(decoded, 2047);
+
+        let encoded = I::i(0b0010011, T0, 0b000, T1, -2048); // max negative 12-bit
+        let (.., decoded) = I::from_i(encoded);
+        assert_eq!(decoded, -2048);
+    }
+
+    #[test]
+    fn test_sign_extension_s_type() {
+        // test positive values
+        let encoded = I::s(0b0100011, 0b010, T0, T1, 100);
+        let (.., decoded) = I::from_s(encoded);
+        assert_eq!(decoded, 100);
+
+        // test negative values
+        let encoded = I::s(0b0100011, 0b010, T0, T1, -50);
+        let (.., decoded) = I::from_s(encoded);
+        assert_eq!(decoded, -50);
+
+        // test boundary values
+        let encoded = I::s(0b0100011, 0b010, T0, T1, 2047);
+        let (.., decoded) = I::from_s(encoded);
+        assert_eq!(decoded, 2047);
+
+        let encoded = I::s(0b0100011, 0b010, T0, T1, -2048);
+        let (.., decoded) = I::from_s(encoded);
+        assert_eq!(decoded, -2048);
+    }
+
+    #[test]
+    fn test_u_type_roundtrip() {
+        // test U-type instructions (LUI, AUIPC) with values in signed 20-bit range
+        let test_cases = [
+            (T0, 0i32),
+            (A0, 0x12345i32),
+            (SP, -1i32),       // all bits set -> -1
+            (RA, -524_288i32), // bit 19 set => -524_288
+            (T6, 0x7FFFFi32),  // max positive signed 20-bit value = 524_287
+        ];
+
+        for &(rd, imm) in &test_cases {
+            // test LUI
+            let encoded = I::u(0b0110111, rd, imm);
+            let (d, decoded_imm) = I::from_u(encoded);
+            assert_eq!(d, rd);
+            assert_eq!(decoded_imm, imm);
+
+            // test AUIPC
+            let encoded = I::u(0b0010111, rd, imm);
+            let (d, decoded_imm) = I::from_u(encoded);
+            assert_eq!(d, rd);
+            assert_eq!(decoded_imm, imm);
+        }
+    }
+
+    #[test]
+    fn test_bit_patterns() {
+        // verify that -1 as i16 becomes 0xFFFF when cast to u16
+        assert_eq!((-1i16) as u16, 0xFFFF);
+        assert_eq!((-50i16) as u16, 0xFFCE);
+
+        // verify our sign extension logic
+        let test_val = 0xFFCE_u16; // -50 as u16
+        let sign_extended = if (test_val & 0x800) != 0 {
+            (test_val | 0xF000) as i16
+        } else {
+            test_val as i16
+        };
+        assert_eq!(sign_extended, -50i16);
     }
 }
