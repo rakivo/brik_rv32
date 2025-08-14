@@ -62,7 +62,7 @@
 //! ```
 //! - `seqz $d, $s`: `sltiu $d, $s, 0`
 //! - `snez $d, $s`: `sltu $d, $zero, $s`
-//! Custom Pseudo-Instructions
+//!   Custom Pseudo-Instructions
 //! - `zero $d`: `addi $r, $zero, 0` (set register to zero)
 //! - `slt $d, $a, $b, $s`: (with multiply cpu feature enabled)
 //! ```asm
@@ -104,12 +104,10 @@
     html_favicon_url = "https://ardaku.github.io/mm/icon.svg",
     html_root_url = "https://docs.rs/asm_riscv"
 )]
-#![deny(unsafe_code)]
 #![warn(
     anonymous_parameters,
     missing_copy_implementations,
     missing_debug_implementations,
-    missing_docs,
     nonstandard_style,
     rust_2018_idioms,
     single_use_lifetimes,
@@ -194,43 +192,18 @@ pub enum Reg {
     T6 = 31,
 }
 
+impl Reg {
+    #[inline(always)]
+    pub const fn from_u32(reg: u32) -> Self {
+        debug_assert!(reg < 32);
+        unsafe { core::mem::transmute(reg as u8) }
+    }
+}
+
 impl From<u32> for Reg {
+    #[inline(always)]
     fn from(reg: u32) -> Self {
-        match reg {
-            0 => ZERO,
-            1 => RA,
-            2 => SP,
-            3 => GP,
-            4 => TP,
-            5 => T0,
-            6 => T1,
-            7 => T2,
-            8 => S0,
-            9 => S1,
-            10 => A0,
-            11 => A1,
-            12 => A2,
-            13 => A3,
-            14 => A4,
-            15 => A5,
-            16 => A6,
-            17 => A7,
-            18 => S2,
-            19 => S3,
-            20 => S4,
-            21 => S5,
-            22 => S6,
-            23 => S7,
-            24 => S8,
-            25 => S9,
-            26 => S10,
-            27 => S11,
-            28 => T3,
-            29 => T4,
-            30 => T5,
-            31 => T6,
-            _ => unreachable!(),
-        }
+        Self::from_u32(reg)
     }
 }
 
@@ -321,17 +294,6 @@ pub enum I {
     /// I: Fence (Immediate Is Made Up Of Ordered High Order To Low Order Bits:)
     /// - fm(4), PI(1), PO(1), PR(1), PW(1), SI(1), SO(1), SR(1), SW(1)
     FENCE { im: i16 },
-    //// Multiply Extension ////
-
-    //// Atomic Extension ////
-
-    //// Single-Precision Floating Point Extension ////
-
-    //// Double-Precision Floating Point Extension ////
-
-    //// Vector Extension ///
-
-    //// SIMD Extension ////
 }
 
 impl I {
@@ -341,7 +303,8 @@ impl I {
     /// - funct3: 3
     /// - dst:    5
     /// - opcode: 7
-    fn r(
+    #[inline(always)]
+    pub const fn r(
         opcode: u32,
         d: Reg,
         funct3: u32,
@@ -349,9 +312,9 @@ impl I {
         s2: Reg,
         funct7: u32,
     ) -> u32 {
-        let dst: u32 = (d as u8).into();
-        let src1: u32 = (s1 as u8).into();
-        let src2: u32 = (s2 as u8).into();
+        let dst  = d  as u32;
+        let src1 = s1 as u32;
+        let src2 = s2 as u32;
         let mut out = opcode;
         out |= dst << 7;
         out |= funct3 << 12;
@@ -360,11 +323,13 @@ impl I {
         out |= funct7 << 25;
         out
     }
-    fn from_r(instruction: u32) -> (Reg, u32, Reg, Reg, u32) {
-        let d = Reg::from((instruction & (0b11111 << 7)) >> 7);
+
+    #[inline(always)]
+    pub const fn from_r(instruction: u32) -> (Reg, u32, Reg, Reg, u32) {
+        let d = Reg::from_u32((instruction & (0b11111 << 7)) >> 7);
         let funct3 = (instruction & (0b111 << 12)) >> 12;
-        let s1 = Reg::from((instruction & (0b11111 << 15)) >> 15);
-        let s2 = Reg::from((instruction & (0b11111 << 20)) >> 20);
+        let s1 = Reg::from_u32((instruction & (0b11111 << 15)) >> 15);
+        let s2 = Reg::from_u32((instruction & (0b11111 << 20)) >> 20);
         let funct7 = instruction >> 25;
         (d, funct3, s1, s2, funct7)
     }
@@ -374,10 +339,11 @@ impl I {
     /// - funct3: 3
     /// - dst:    5
     /// - opcode  7
-    fn i(opcode: u32, d: Reg, funct3: u32, s: Reg, im: i16) -> u32 {
-        let im: u32 = (im as u16).into();
-        let dst: u32 = (d as u8).into();
-        let src: u32 = (s as u8).into();
+    #[inline(always)]
+    pub const fn i(opcode: u32, d: Reg, funct3: u32, s: Reg, im: i16) -> u32 {
+        let im  = (im as u16) as u32;
+        let dst = d as u32;
+        let src = s as u32;
         let mut out = opcode;
         out |= dst << 7;
         out |= funct3 << 12;
@@ -385,10 +351,12 @@ impl I {
         out |= im << 20;
         out
     }
-    fn from_i(instruction: u32) -> (Reg, u32, Reg, i16) {
-        let d = Reg::from((instruction & (0b11111 << 7)) >> 7);
+
+    #[inline(always)]
+    pub const fn from_i(instruction: u32) -> (Reg, u32, Reg, i16) {
+        let d = Reg::from_u32((instruction & (0b11111 << 7)) >> 7);
         let funct3 = (instruction & (0b111 << 12)) >> 12;
-        let s = Reg::from((instruction & (0b11111 << 15)) >> 15);
+        let s = Reg::from_u32((instruction & (0b11111 << 15)) >> 15);
         let im = ((instruction >> 20) as u16) as i16;
         (d, funct3, s, im)
     }
@@ -399,7 +367,8 @@ impl I {
     /// - funct3: 3
     /// - dst:    5
     /// - opcode  7
-    fn i7(
+    #[inline(always)]
+    pub const fn i7(
         opcode: u32,
         d: Reg,
         funct3: u32,
@@ -407,10 +376,9 @@ impl I {
         im: i8,
         funct7: u32,
     ) -> u32 {
-        let im = im as u8;
-        let im: u32 = im.into();
-        let dst: u32 = (d as u8).into();
-        let src: u32 = (s as u8).into();
+        let im = (im as u8) as u32;
+        let dst = d as u32;
+        let src = s as u32;
         let mut out = opcode;
         out |= dst << 7;
         out |= funct3 << 12;
@@ -419,10 +387,12 @@ impl I {
         out |= funct7 << 25;
         out
     }
-    fn from_i7(instruction: u32) -> (Reg, u32, Reg, i8, u32) {
-        let d = Reg::from((instruction & (0b11111 << 7)) >> 7);
+
+    #[inline(always)]
+    pub const fn from_i7(instruction: u32) -> (Reg, u32, Reg, i8, u32) {
+        let d = Reg::from_u32((instruction & (0b11111 << 7)) >> 7);
         let funct3 = (instruction & (0b111 << 12)) >> 12;
-        let s = Reg::from((instruction & (0b11111 << 15)) >> 15);
+        let s = Reg::from_u32((instruction & (0b11111 << 15)) >> 15);
         let im = ((instruction & (0b11111 << 20)) >> 20) as u8;
         let funct7 = instruction >> 25;
         (d, funct3, s, im as i8, funct7)
@@ -434,10 +404,10 @@ impl I {
     /// - funct3: 3
     /// - im_l:  5
     /// - opcode  7
-    fn s(opcode: u32, funct3: u32, s1: Reg, s2: Reg, im: i16) -> u32 {
-        let im: u32 = (im as u16).into();
-        let src1: u32 = (s1 as u8).into();
-        let src2: u32 = (s2 as u8).into();
+    pub const fn s(opcode: u32, funct3: u32, s1: Reg, s2: Reg, im: i16) -> u32 {
+        let im  = (im as u16) as u32;
+        let src1 = s1 as u32;
+        let src2 = s2 as u32;
         let mut out = opcode;
         out |= (im & 0b11111) << 7;
         out |= funct3 << 12;
@@ -446,11 +416,13 @@ impl I {
         out |= (im >> 5) << 25;
         out
     }
-    fn from_s(instruction: u32) -> (u32, Reg, Reg, i16) {
+
+    #[inline(always)]
+    pub const fn from_s(instruction: u32) -> (u32, Reg, Reg, i16) {
         let mut im = ((instruction & (0b11111 << 7)) >> 7) as u16;
         let funct3 = (instruction & (0b111 << 12)) >> 12;
-        let s1 = Reg::from((instruction & (0b11111 << 15)) >> 15);
-        let s2 = Reg::from((instruction & (0b11111 << 20)) >> 20);
+        let s1 = Reg::from_u32((instruction & (0b11111 << 15)) >> 15);
+        let s2 = Reg::from_u32((instruction & (0b11111 << 20)) >> 20);
         im |= ((instruction >> 25) as u16) << 5;
         (funct3, s1, s2, im as i16)
     }
@@ -458,67 +430,77 @@ impl I {
     /// - im:    20
     /// - dst:    5
     /// - opcode  7
-    fn u(opcode: u32, d: Reg, im: i32) -> u32 {
-        let im = im as u32;
-        let dst: u32 = (d as u8).into();
+    #[inline(always)]
+    pub const fn u(opcode: u32, d: Reg, im: i32) -> u32 {
+        let im  = im as u32;
+        let dst = d as u32;
         let mut out = opcode;
         out |= dst << 7;
         out |= im << 12;
         out
     }
-    fn from_u(instruction: u32) -> (Reg, i32) {
-        let d = Reg::from((instruction & (0b11111 << 7)) >> 7);
+
+    #[inline(always)]
+    pub const fn from_u(instruction: u32) -> (Reg, i32) {
+        let d = Reg::from_u32((instruction & (0b11111 << 7)) >> 7);
         let im = instruction >> 12;
         (d, im as i32)
+    }
+
+    #[inline]
+    pub const fn into_u32(self) -> u32 {
+        match self {
+            LUI { d, im }       => I::u(0b0110111, d, im),
+            AUIPC { d, im }     => I::u(0b0010111, d, im),
+            JAL { d, im }       => I::u(0b1101111, d, im),
+            JALR { d, s, im }   => I::i(0b1100111, d, 0b000, s, im),
+            BEQ { s1, s2, im }  => I::s(0b1100011, 0b000, s1, s2, im),
+            BNE { s1, s2, im }  => I::s(0b1100011, 0b001, s1, s2, im),
+            BLT { s1, s2, im }  => I::s(0b1100011, 0b100, s1, s2, im),
+            BGE { s1, s2, im }  => I::s(0b1100011, 0b101, s1, s2, im),
+            BLTU { s1, s2, im } => I::s(0b1100011, 0b110, s1, s2, im),
+            BGEU { s1, s2, im } => I::s(0b1100011, 0b111, s1, s2, im),
+            LB { d, s, im }     => I::i(0b0000011, d, 0b000, s, im),
+            LH { d, s, im }     => I::i(0b0000011, d, 0b001, s, im),
+            LW { d, s, im }     => I::i(0b0000011, d, 0b010, s, im),
+            LBU { d, s, im }    => I::i(0b0000011, d, 0b100, s, im),
+            LHU { d, s, im }    => I::i(0b0000011, d, 0b101, s, im),
+            ADDI { d, s, im }   => I::i(0b0010011, d, 0b000, s, im),
+            SLTI { d, s, im }   => I::i(0b0010011, d, 0b010, s, im),
+            SLTUI { d, s, im }  => I::i(0b0010011, d, 0b011, s, im),
+            XORI { d, s, im }   => I::i(0b0010011, d, 0b100, s, im),
+            ORI { d, s, im }    => I::i(0b0010011, d, 0b110, s, im),
+            ANDI { d, s, im }   => I::i(0b0010011, d, 0b111, s, im),
+            SLLI { d, s, im }   => I::i7(0b0010011, d, 0b001, s, im, 0b0000000),
+            SRLI { d, s, im }   => I::i7(0b0010011, d, 0b101, s, im, 0b0000000),
+            SRAI { d, s, im }   => I::i7(0b0010011, d, 0b101, s, im, 0b0100000),
+            SB { s1, s2, im }   => I::s(0b0100011, 0b000, s1, s2, im),
+            SH { s1, s2, im }   => I::s(0b0100011, 0b001, s1, s2, im),
+            SW { s1, s2, im }   => I::s(0b0100011, 0b010, s1, s2, im),
+            ADD { d, s1, s2 }   => I::r(0b0110011, d, 0b000, s1, s2, 0b0000000),
+            SUB { d, s1, s2 }   => I::r(0b0110011, d, 0b000, s1, s2, 0b0100000),
+            SLL { d, s1, s2 }   => I::r(0b0110011, d, 0b001, s1, s2, 0b0000000),
+            SLT { d, s1, s2 }   => I::r(0b0110011, d, 0b010, s1, s2, 0b0000000),
+            SLTU { d, s1, s2 }  => I::r(0b0110011, d, 0b011, s1, s2, 0b0000000),
+            XOR { d, s1, s2 }   => I::r(0b0110011, d, 0b100, s1, s2, 0b0000000),
+            SRL { d, s1, s2 }   => I::r(0b0110011, d, 0b101, s1, s2, 0b0000000),
+            SRA { d, s1, s2 }   => I::r(0b0110011, d, 0b101, s1, s2, 0b0100000),
+            OR { d, s1, s2 }    => I::r(0b0110011, d, 0b110, s1, s2, 0b0000000),
+            AND { d, s1, s2 }   => I::r(0b0110011, d, 0b111, s1, s2, 0b0000000),
+            ECALL {}            => I::i(0b1110011, ZERO, 0b000, ZERO, 0b000000000000),
+            EBREAK {}           => I::i(0b1110011, ZERO, 0b000, ZERO, 0b000000000001),
+            FENCE { im }        => I::i(0b0001111, ZERO, 0b000, ZERO, im),
+        }
     }
 }
 
 impl From<I> for u32 {
+    #[inline(always)]
     fn from(with: I) -> Self {
-        match with {
-            LUI { d, im } => I::u(0b0110111, d, im),
-            AUIPC { d, im } => I::u(0b0010111, d, im),
-            JAL { d, im } => I::u(0b1101111, d, im),
-            JALR { d, s, im } => I::i(0b1100111, d, 0b000, s, im),
-            BEQ { s1, s2, im } => I::s(0b1100011, 0b000, s1, s2, im),
-            BNE { s1, s2, im } => I::s(0b1100011, 0b001, s1, s2, im),
-            BLT { s1, s2, im } => I::s(0b1100011, 0b100, s1, s2, im),
-            BGE { s1, s2, im } => I::s(0b1100011, 0b101, s1, s2, im),
-            BLTU { s1, s2, im } => I::s(0b1100011, 0b110, s1, s2, im),
-            BGEU { s1, s2, im } => I::s(0b1100011, 0b111, s1, s2, im),
-            LB { d, s, im } => I::i(0b0000011, d, 0b000, s, im),
-            LH { d, s, im } => I::i(0b0000011, d, 0b001, s, im),
-            LW { d, s, im } => I::i(0b0000011, d, 0b010, s, im),
-            LBU { d, s, im } => I::i(0b0000011, d, 0b100, s, im),
-            LHU { d, s, im } => I::i(0b0000011, d, 0b101, s, im),
-            ADDI { d, s, im } => I::i(0b0010011, d, 0b000, s, im),
-            SLTI { d, s, im } => I::i(0b0010011, d, 0b010, s, im),
-            SLTUI { d, s, im } => I::i(0b0010011, d, 0b011, s, im),
-            XORI { d, s, im } => I::i(0b0010011, d, 0b100, s, im),
-            ORI { d, s, im } => I::i(0b0010011, d, 0b110, s, im),
-            ANDI { d, s, im } => I::i(0b0010011, d, 0b111, s, im),
-            SLLI { d, s, im } => I::i7(0b0010011, d, 0b001, s, im, 0b0000000),
-            SRLI { d, s, im } => I::i7(0b0010011, d, 0b101, s, im, 0b0000000),
-            SRAI { d, s, im } => I::i7(0b0010011, d, 0b101, s, im, 0b0100000),
-            SB { s1, s2, im } => I::s(0b0100011, 0b000, s1, s2, im),
-            SH { s1, s2, im } => I::s(0b0100011, 0b001, s1, s2, im),
-            SW { s1, s2, im } => I::s(0b0100011, 0b010, s1, s2, im),
-            ADD { d, s1, s2 } => I::r(0b0110011, d, 0b000, s1, s2, 0b0000000),
-            SUB { d, s1, s2 } => I::r(0b0110011, d, 0b000, s1, s2, 0b0100000),
-            SLL { d, s1, s2 } => I::r(0b0110011, d, 0b001, s1, s2, 0b0000000),
-            SLT { d, s1, s2 } => I::r(0b0110011, d, 0b010, s1, s2, 0b0000000),
-            SLTU { d, s1, s2 } => I::r(0b0110011, d, 0b011, s1, s2, 0b0000000),
-            XOR { d, s1, s2 } => I::r(0b0110011, d, 0b100, s1, s2, 0b0000000),
-            SRL { d, s1, s2 } => I::r(0b0110011, d, 0b101, s1, s2, 0b0000000),
-            SRA { d, s1, s2 } => I::r(0b0110011, d, 0b101, s1, s2, 0b0100000),
-            OR { d, s1, s2 } => I::r(0b0110011, d, 0b110, s1, s2, 0b0000000),
-            AND { d, s1, s2 } => I::r(0b0110011, d, 0b111, s1, s2, 0b0000000),
-            ECALL {} => I::i(0b1110011, ZERO, 0b000, ZERO, 0b000000000000),
-            EBREAK {} => I::i(0b1110011, ZERO, 0b000, ZERO, 0b000000000001),
-            FENCE { im } => I::i(0b0001111, ZERO, 0b000, ZERO, im),
-        }
+        I::into_u32(with)
     }
 }
+
 #[derive(Debug, Clone, Copy)]
 /// Error types when converting `u32` to `I`
 pub enum ConversionError {
@@ -531,6 +513,7 @@ pub enum ConversionError {
     /// Unknown opcode
     UnknownOpcode(u32),
 }
+
 impl TryFrom<u32> for I {
     type Error = ConversionError;
     // Using match makes it easier to extend code in the future.

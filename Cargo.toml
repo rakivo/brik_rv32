@@ -1,5 +1,20 @@
-[workspace]
-members = [
-    "asm_riscv",
-    "wari",
+[package]
+name = "asm_riscv"
+version = "0.2.0"
+license = "Apache-2.0 OR BSL-1.0 OR MIT"
+description = "RISC-V Assembly Encoder / Decoder."
+repository = "https://github.com/ardaku/wari"
+documentation = "https://docs.rs/asm_riscv"
+homepage = "https://github.com/ardaku/wari/blob/stable/asm_riscv/CHANGELOG.md"
+include = ["Cargo.toml", "README.md", "src/*"]
+categories = [
+    "compilers",
+    "encoding",
+    "hardware-support",
+    "parser-implementations",
 ]
+keywords = ["riscv", "assembly", "encode", "decode", "asm"]
+readme = "README.md"
+edition = "2021"
+
+[dependencies]
