@@ -565,7 +565,7 @@ impl I {
             BGE { s1, s2, im }  => I::s(0b1100011,  0b101, s1,    s2,   im),
             BLTU { s1, s2, im } => I::s(0b1100011,  0b110, s1,    s2,   im),
             BGEU { s1, s2, im } => I::s(0b1100011,  0b111, s1,    s2,   im),
-            LB { d, s, im }     => I::i(0b0000011,  d,     0b00   0,    s,  im),
+            LB { d, s, im }     => I::i(0b0000011,  d,     0b000, s,  im),
             LH { d, s, im }     => I::i(0b0000011,  d,     0b001, s,    im),
             LW { d, s, im }     => I::i(0b0000011,  d,     0b010, s,    im),
             LBU { d, s, im }    => I::i(0b0000011,  d,     0b100, s,    im),
