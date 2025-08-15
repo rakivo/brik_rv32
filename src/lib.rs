@@ -124,7 +124,7 @@ use I::*;
 
 /// A RISC-V Register
 #[repr(u8)]
-#[derive(Copy, Clone, PartialEq, Debug)]
+#[derive(Eq, Ord, Hash, Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub enum Reg {
     /// SPECIAL: Always 0
     ZERO = 0u8,
@@ -205,6 +205,19 @@ impl From<u32> for Reg {
     fn from(reg: u32) -> Self {
         Self::from_u32(reg)
     }
+}
+
+/// Error types when converting `u32` to `I`
+#[derive(Debug, Clone, Copy)]
+pub enum ConversionError {
+    /// Unknown funct3 field
+    UnknownFunct3(u32),
+    /// Unknown funct3 or funct7 field
+    UnknownFunct3Funct7(u32, u32),
+    /// Unknown Environment Control Transfer
+    UnknownEnvCtrlTransfer,
+    /// Unknown opcode
+    UnknownOpcode(u32),
 }
 
 /// An assembly instruction (im is limited to 12 bits)
@@ -294,6 +307,13 @@ pub enum I {
     /// I: Fence (Immediate Is Made Up Of Ordered High Order To Low Order Bits:)
     /// - fm(4), PI(1), PO(1), PR(1), PW(1), SI(1), SO(1), SR(1), SW(1)
     FENCE { im: i16 },
+}
+
+impl PartialEq for I {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        self.into_u32() == other.into_u32()
+    }
 }
 
 impl I {
@@ -597,33 +617,9 @@ impl I {
             FENCE { im }        => I::i(0b0001111,  ZERO,  0b000, ZERO, im),
         }
     }
-}
 
-impl From<I> for u32 {
-    #[inline(always)]
-    fn from(with: I) -> Self {
-        I::into_u32(with)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-/// Error types when converting `u32` to `I`
-pub enum ConversionError {
-    /// Unknown funct3 field
-    UnknownFunct3(u32),
-    /// Unknown funct3 or funct7 field
-    UnknownFunct3Funct7(u32, u32),
-    /// Unknown Environment Control Transfer
-    UnknownEnvCtrlTransfer,
-    /// Unknown opcode
-    UnknownOpcode(u32),
-}
-
-impl TryFrom<u32> for I {
-    type Error = ConversionError;
-    // Using match makes it easier to extend code in the future.
     #[allow(clippy::match_single_binding)]
-    fn try_from(with: u32) -> Result<Self, Self::Error> {
+    pub const fn try_from_u32(with: u32) -> Result<Self, ConversionError> {
         Ok(match with & 0b1111111 {
             // Load From RAM
             0b0000011 => match I::from_i(with) {
@@ -726,6 +722,23 @@ impl TryFrom<u32> for I {
             },
             o => return Err(ConversionError::UnknownOpcode(o)),
         })
+    }
+
+}
+
+impl From<I> for u32 {
+    #[inline(always)]
+    fn from(with: I) -> Self {
+        I::into_u32(with)
+    }
+}
+
+impl TryFrom<u32> for I {
+    type Error = ConversionError;
+    // Using match makes it easier to extend code in the future.
+    #[allow(clippy::match_single_binding)]
+    fn try_from(with: u32) -> Result<Self, Self::Error> {
+        Self::try_from_u32(with)
     }
 }
 
