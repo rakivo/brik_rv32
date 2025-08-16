@@ -156,10 +156,10 @@ impl AqRl {
 
 /// An assembly instruction (im is limited to 12 bits)
 ///
-/// SLLI, SRLI, SRAI, SLL, SRL, SRA variants do not enforce a specific shift amount (shamt) range encoding/decoding.
+/// This enum does not enforce a specific shift amount (shamt) range.
+/// This means a single enum variant can encode both RV32 and RV64 forms.
 /// For RV32: valid shamt is 0–31 (immediate) or lower 5 bits of rs2 (register shift).
 /// For RV64: valid shamt is 0–63 (immediate) or lower 6 bits of rs2 (register shift).
-/// This means a single enum variant can encode both RV32 and RV64 forms.
 #[allow(clippy::enum_variant_names)]
 #[allow(non_camel_case_types)]
 #[allow(missing_docs)]
@@ -215,27 +215,27 @@ pub enum I32 {
     /// I: And Immediate
     ANDI { d: Reg, s: Reg, im: i16 },
     /// I: Logical Left Shift Immediate
-    SLLI { d: Reg, s: Reg, im: i8 },
+    SLLI { d: Reg, s: Reg, shamt: u8 },
     /// I: Logical Right Shift Immediate
-    SRLI { d: Reg, s: Reg, im: i8 },
+    SRLI { d: Reg, s: Reg, shamt: u8 },
     /// I: Arithmetic Shift Right Immediate (See SRA).
-    SRAI { d: Reg, s: Reg, im: i8 },
+    SRAI { d: Reg, s: Reg, shamt: u8 },
+    /// R: Logical Left Shift
+    SLL { d: Reg, s1: Reg, s2: Reg },
+    /// R: Logical Right Shift
+    SRL { d: Reg, s1: Reg, s2: Reg },
+    /// R: Arithmetic Shift Right (Sign Bit Copied Rather Than Filling In Zeros)
+    SRA { d: Reg, s1: Reg, s2: Reg },
     /// R: Add (`R[d]: R[s1] + R[s2]`)
     ADD { d: Reg, s1: Reg, s2: Reg },
     /// R: Subtract (`R[d]: R[s1] - R[s2]`)
     SUB { d: Reg, s1: Reg, s2: Reg },
-    /// R: Logical Left Shift
-    SLL { d: Reg, s1: Reg, s2: Reg },
     /// R: Set 1 on Less Than, 0 Otherwise
     SLT { d: Reg, s1: Reg, s2: Reg },
     /// R: Set 1 on Less Than, 0 Otherwise Unsigned
     SLTU { d: Reg, s1: Reg, s2: Reg },
     /// R: Xor
     XOR { d: Reg, s1: Reg, s2: Reg },
-    /// R: Logical Right Shift
-    SRL { d: Reg, s1: Reg, s2: Reg },
-    /// R: Arithmetic Shift Right (Sign Bit Copied Rather Than Filling In Zeros)
-    SRA { d: Reg, s1: Reg, s2: Reg },
     /// R: Or
     OR { d: Reg, s1: Reg, s2: Reg },
     /// R: And
@@ -383,10 +383,10 @@ impl I32 {
         d: Reg,
         funct3: u32,
         s: Reg,
-        im: i8,
+        im: u8,
         funct7: u32,
     ) -> u32 {
-        let im = (im as u8) as u32;
+        let im = im as u32;
         let dst = d as u32;
         let src = s as u32;
         let mut out = opcode;
@@ -399,13 +399,13 @@ impl I32 {
     }
 
     #[inline(always)]
-    pub const fn from_i7(instruction: u32) -> (Reg, u32, Reg, i8, u32) {
+    pub const fn from_i7(instruction: u32) -> (Reg, u32, Reg, u8, u32) {
         let d = Reg::from_u32((instruction & (0b11111 << 7)) >> 7);
         let funct3 = (instruction & (0b111 << 12)) >> 12;
         let s = Reg::from_u32((instruction & (0b11111 << 15)) >> 15);
         let im = ((instruction & (0b11111 << 20)) >> 20) as u8;
         let funct7 = instruction >> 25;
-        (d, funct3, s, im as i8, funct7)
+        (d, funct3, s, im, funct7)
     }
 
     /// - im_h:  7
@@ -605,9 +605,9 @@ impl I32 {
             XORI { d, s, im }   => I32::i(0b0010011,  d,     0b100, s,    im),
             ORI { d, s, im }    => I32::i(0b0010011,  d,     0b110, s,    im),
             ANDI { d, s, im }   => I32::i(0b0010011,  d,     0b111, s,    im),
-            SLLI { d, s, im }   => I32::i7(0b0010011, d,     0b001, s,    im, 0b0000000),
-            SRLI { d, s, im }   => I32::i7(0b0010011, d,     0b101, s,    im, 0b0000000),
-            SRAI { d, s, im }   => I32::i7(0b0010011, d,     0b101, s,    im, 0b0100000),
+            SLLI { d, s, shamt: im } => I32::i7(0b0010011, d,     0b001, s,    im, 0b0000000),
+            SRLI { d, s, shamt: im } => I32::i7(0b0010011, d,     0b101, s,    im, 0b0000000),
+            SRAI { d, s, shamt: im } => I32::i7(0b0010011, d,     0b101, s,    im, 0b0100000),
             ADD { d, s1, s2 }   => I32::r(0b0110011, d, 0b000, s1, s2, 0b0000000),
             SUB { d, s1, s2 }   => I32::r(0b0110011, d, 0b000, s1, s2, 0b0100000),
             SLL { d, s1, s2 }   => I32::r(0b0110011, d, 0b001, s1, s2, 0b0000000),
@@ -649,8 +649,26 @@ impl I32 {
         }
     }
 
+    #[inline(always)]
     #[allow(clippy::match_single_binding)]
     pub const fn try_from_u32(with: u32) -> Result<Self, ConversionError> {
+        Self::try_from_u32_rv32(with)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::match_single_binding)]
+    pub const fn try_from_u32_rv32(with: u32) -> Result<Self, ConversionError> {
+        Self::try_from_u32_(with, 32)
+    }
+
+    #[inline(always)]
+    #[allow(clippy::match_single_binding)]
+    pub const fn try_from_u32_rv64(with: u32) -> Result<Self, ConversionError> {
+        Self::try_from_u32_(with, 64)
+    }
+
+    #[allow(clippy::match_single_binding)]
+    const fn try_from_u32_(with: u32, xlen: u8) -> Result<Self, ConversionError> {
         Ok(match with & 0b1111111 {
             // Load From RAM
             0b0000011 => match I32::from_i(with) {
@@ -678,18 +696,25 @@ impl I32 {
                 (d, 0b100, s, im) => XORI { d, s, im },
                 (d, 0b110, s, im) => ORI { d, s, im },
                 (d, 0b111, s, im) => ANDI { d, s, im },
-                (d, 0b001, s, im) => match (im >> 5) & 0b1111111 {
-                    0b0000000 => SLLI { d, s, im: im as i8 },
-                    _ => return Err(ConversionError::UnknownFunct7((im >> 5) as _))
+
+                (d, 0b001, s, im) => {
+                    let shamt_mask = if xlen == 32 { 0x1F } else { 0x3F };
+                    let shamt = (im & shamt_mask) as u8;
+                    SLLI { d, s, shamt }
                 },
-                (d, 0b101, s, im) => match (im >> 5) & 0b1111111 {
-                    0b0000000 => SRLI { d, s, im: im as i8 },
-                    0b0100000 => SRAI { d, s, im: im as i8 },
-                    _ => return Err(ConversionError::UnknownFunct7((im >> 5) as _))
+
+                (d, 0b101, s, im) => {
+                    let shamt_mask = if xlen == 32 { 0x1F } else { 0x3F };
+                    let shamt = (im & shamt_mask) as u8;
+                    let funct7 = (im >> 5) & 0b1111111;
+                    match funct7 {
+                        0b0000000 => SRLI { d, s, shamt },
+                        0b0100000 => SRAI { d, s, shamt },
+                        _ => return Err(ConversionError::UnknownFunct7(funct7 as _))
+                    }
                 },
-                (_, funct, _, _) => {
-                    return Err(ConversionError::UnknownFunct3(funct))
-                }
+
+                (_, funct3, _, _) => return Err(ConversionError::UnknownFunct3(funct3)),
             },
             // AUIPC
             0b0010111 => match I32::from_u(with) {
