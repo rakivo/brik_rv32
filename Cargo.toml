@@ -3,9 +3,7 @@ name = "brik_rv32"
 version = "0.2.0"
 license = "Apache-2.0 OR BSL-1.0 OR MIT"
 description = "RISC-V Assembly Encoder / Decoder."
-repository = "https://github.com/ardaku/wari"
-documentation = "https://docs.rs/asm_riscv"
-homepage = "https://github.com/ardaku/wari/blob/stable/asm_riscv/CHANGELOG.md"
+repository = "https://github.com/rakivo/brik_rv32"
 include = ["Cargo.toml", "README.md", "src/*"]
 categories = [
     "compilers",

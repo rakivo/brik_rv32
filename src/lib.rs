@@ -1,109 +1,6 @@
-//! RISC-V 32-Bit Base Integer Instructions to compile into, with plans for
-//! optional extensions that can be enabled.
-//! - RV32M Multiply Extension
-//! - RV32A Atomic Extension
-//! - RV32F Single-Precision Floating Point Extension
-//! - RV32D Double-Precision Floating Point Extension
-//!
-//! # Not Planned For Now
-//! - RV32Q Quadruple-Precision Floating Point Extension
-//! - RV32C Compression 16-bit Instructions
-//! - All 64 bit extensions
-//!
-//! May be ported to other platforms with assembly translators.
-//!
-//! # RISC-V Compiler Notes
-//! This is intended to help anyone who needs it, if they're building a compiler
-//! to RISC-V.
-//! - For speed: Make sure all loads and stores are 32-bit aligned
-//! - For shifts: Shifting the width of the register is a no-op, to clear
-//!   register $R use ADDI $R, $ZERO, 0.
-//!
-//! ## Psuedo-Instructions
-//! - `nop`: `addi $zero, $zero, 0`
-//! - `mv $d, $s`: `addi $d, $s, 0`
-//! - `not $d, $s`: `ori $d, $s, -1`
-//! - `neg $d, $s`: `sub $d, $zero, $s`
-//! - `j offset`: `jal $zero, offset` (unconditional jump)
-//! - `jal offset`: `jal $ra, offset` (near function call)
-//! - `call offset`: (far function call)
-//! ```asm
-//! auipc $ra, offset[31:12] + offset[11]
-//! jalr $ra, offset[11:0]($ra)
-//! ```
-//! - `ret`: `jalr $ra, 0($ra)`
-//! - `beqz $r, offset`: `beq $r, $zero, offset`
-//! - `bnez $r, offset`: `bne $r, $zero, offset`
-//! - `bgez $r, offset`: `bge $r, $zero, offset`
-//! - `bltz $r, offset`: `blt $r, $zero, offset`
-//! - `bgt $r1, $r2, offset`: `blt $r2, $r1, offset`
-//! - `ble $r1, $r2, offset`: `bge $r2, $r1, offset`
-//! - `fence`: `fence IORW, IORW`
-//! - `li $d, im`: `addi $d, $zero, im` (set immediate)
-//! - `li $d, im`:
-//! ```asm
-//! lui $d, im[31:12] + im[11]
-//! addi $d, $zero, im[11:0]
-//! ```
-//! - `la $d, symbol`:
-//! ```asm
-//! auipc $d, delta[31:12] + delta[11]
-//! addi $d, $d, delta[11:0]
-//! ```
-//! - `lw $d, symbol`:
-//! ```asm
-//! auipc $d, delta[31:12] + delta[11]
-//! lw $d, $d, delta[11:0](rd)
-//! ```
-//! - `sw $d, symbol, $t`:
-//! ```asm
-//! auipc $t, delta[31:12] + delta[11]
-//! sw $d, $d, delta[11:0]($t)
-//! ```
-//! - `seqz $d, $s`: `sltiu $d, $s, 0`
-//! - `snez $d, $s`: `sltu $d, $zero, $s`
-//!   Custom Pseudo-Instructions
-//! - `zero $d`: `addi $r, $zero, 0` (set register to zero)
-//! - `slt $d, $a, $b, $s`: (with multiply cpu feature enabled)
-//! ```asm
-//! # Option 1:
-//! slt $d, $a, $b
-//! mul $d, $d, $s
-//! ```
-//! - `slt $d, $a, $b, $s`: (without multiply cpu feature enabled)
-//! ```asm
-//! # Option 1 (branching, ugh):
-//! blt $a, $b, 12 # 12: ④
-//! addi $d, $zero, 0
-//! jal $zero 8 # Skip next instruction
-//! add $d, $zero, $s # ④
-//!
-//! # Option 2 (might be faster for without AND with multiply extension):
-//! slt $d, $a, $b
-//! slli $d, $d, 31
-//! srai $d, $d, 31
-//! and $d, $d, $s
-//! ```
-//! - `slt $d, $a, $b, $s, $e`: (`$d: if $a < $b { $s } else { $e }`)
-//! ```asm
-//! sub $s, $s, $e
-//! slt $d, $a, $b, $s
-//! add $d, $d, $e
-//! add $s, $s, $e # can be elimated if s is dropped
-//! ```
-//! - `slt $d, $a, $b, $s, $e, $t`: (`$d: if $a < $b { $s } else { $e }`)
-//! ```asm
-//! sub $t, $s, $e
-//! slt $d, $a, $b, $t
-//! add $d, $d, $e
-//! ```
+//! RISC-V 32-Bit encoding/decoding crate
 
 #![no_std]
-#![doc(
-    html_logo_url = "https://ardaku.github.io/mm/logo.svg",
-    html_favicon_url = "https://ardaku.github.io/mm/icon.svg",
-    html_root_url = "https://docs.rs/asm_riscv"
-)]
 #![warn(
     anonymous_parameters,
     missing_copy_implementations,
@@ -119,8 +16,8 @@
     variant_size_differences
 )]
 
+use I32::*;
 use Reg::*;
-use I::*;
 
 /// A RISC-V Register
 #[repr(u8)]
@@ -212,19 +109,57 @@ impl From<u32> for Reg {
 pub enum ConversionError {
     /// Unknown funct3 field
     UnknownFunct3(u32),
+
+    /// Unknown funct7 field
+    UnknownFunct7(u32),
+
     /// Unknown funct3 or funct7 field
     UnknownFunct3Funct7(u32, u32),
+
+    /// Unknown funct3 or funct5 field
+    UnknownFunct3Funct5(u32, u32),
+
     /// Unknown Environment Control Transfer
     UnknownEnvCtrlTransfer,
+
     /// Unknown opcode
     UnknownOpcode(u32),
 }
 
+/// Memory ordering bits for A-extension instructions (aq: acquire, rl: release).
+#[repr(u8)]
+#[derive(Eq, Copy, Clone, Debug, PartialEq)]
+pub enum AqRl {
+    /// No ordering constraints       (aq=0, rl=0).
+    None           = 0b00,
+    /// Release semantics             (aq=0, rl=1).
+    Release        = 0b01,
+    /// Acquire semantics             (aq=1, rl=0).
+    Acquire        = 0b10,
+    /// Acquire and release semantics (aq=1, rl=1).
+    AcquireRelease = 0b11,
+}
+
+impl AqRl {
+    /// Returns the 2-bit aq/rl value as a `u32` for instruction encoding.
+    #[inline(always)]
+    pub const fn as_u32(self) -> u32 {
+        self as u8 as u32
+    }
+
+    #[inline(always)]
+    pub const fn from_u32(with: u32) -> Self {
+        debug_assert!(with < 4);
+        unsafe { core::mem::transmute(with as u8) }
+    }
+}
+
 /// An assembly instruction (im is limited to 12 bits)
 #[allow(clippy::enum_variant_names)]
+#[allow(non_camel_case_types)]
 #[allow(missing_docs)]
 #[derive(Copy, Clone, Debug)]
-pub enum I {
+pub enum I32 {
     //// One of 40 User mode instructions in the RV32I Base Instruction Set ////
     /// U: Set upper 20 bits to immediate value
     LUI { d: Reg, im: i32 },
@@ -267,7 +202,7 @@ pub enum I {
     /// I: Set 1 on Less Than, 0 Otherwise Immediate
     SLTI { d: Reg, s: Reg, im: i16 },
     /// I: Set 1 on Less Than, 0 Otherwise Immediate Unsigned
-    SLTUI { d: Reg, s: Reg, im: i16 },
+    SLTIU { d: Reg, s: Reg, im: i16 },
     /// I: Xor Immediate
     XORI { d: Reg, s: Reg, im: i16 },
     /// I: Or Immediate
@@ -307,16 +242,60 @@ pub enum I {
     /// I: Fence (Immediate Is Made Up Of Ordered High Order To Low Order Bits:)
     /// - fm(4), PI(1), PO(1), PR(1), PW(1), SI(1), SO(1), SR(1), SW(1)
     FENCE { im: i16 },
+
+    //// M-extension instructions (Version 2.1) ////
+    /// R: Multiply (`R[d]: (R[s1] * R[s2])[31:0]`) - Returns lower 32 bits of product
+    MUL { d: Reg, s1: Reg, s2: Reg },
+    /// R: Multiply High Signed x Signed (`R[d]: (R[s1] * R[s2])[63:32]`) - Returns upper 32 bits of signed x signed product
+    MULH { d: Reg, s1: Reg, s2: Reg },
+    /// R: Multiply High Signed x Unsigned (`R[d]: (R[s1] * R[s2])[63:32]`) - Returns upper 32 bits of signed x unsigned product
+    MULHSU { d: Reg, s1: Reg, s2: Reg },
+    /// R: Multiply High Unsigned x Unsigned (`R[d]: (R[s1] * R[s2])[63:32]`) - Returns upper 32 bits of unsigned x unsigned product
+    MULHU { d: Reg, s1: Reg, s2: Reg },
+    /// R: Divide (`R[d]: R[s1] / R[s2]`) - Signed division
+    DIV { d: Reg, s1: Reg, s2: Reg },
+    /// R: Divide Unsigned (`R[d]: R[s1] / R[s2]`) - Unsigned division
+    DIVU { d: Reg, s1: Reg, s2: Reg },
+    /// R: Remainder (`R[d]: R[s1] % R[s2]`) - Signed remainder
+    REM { d: Reg, s1: Reg, s2: Reg },
+    /// R: Remainder Unsigned (`R[d]: R[s1] % R[s2]`) - Unsigned remainder
+    REMU { d: Reg, s1: Reg, s2: Reg },
+
+    //// A-extension Load-Reserved/Store-Conditional Instructions ////
+    /// R: Load-Reserved Word (`R[d]: M[R[s1]]`) - Loads 32-bit word, reserves address for SC
+    LR_W { d: Reg, s1: Reg, aqrl: AqRl },
+    /// R: Store-Conditional Word (`R[d]: success/fail, M[R[s1]]: R[s2]`) - Conditionally stores if reservation valid
+    SC_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
+
+    //// A-extension Atomic Memory Operations (32-bit) ////
+    /// R: Atomic Add Word (`R[d]: M[R[s1]], M[R[s1]]: M[R[s1]] + R[s2]`) - Atomically adds s2 to memory, returns original value
+    AMOADD_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
+    /// R: Atomic Swap Word (`R[d]: M[R[s1]], M[R[s1]]: R[s2]`) - Atomically swaps s2 with memory, returns original value
+    AMOSWAP_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
+    /// R: Atomic AND Word (`R[d]: M[R[s1]], M[R[s1]]: M[R[s1]] & R[s2]`) - Atomically ANDs s2 with memory, returns original value
+    AMOAND_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
+    /// R: Atomic OR Word (`R[d]: M[R[s1]], M[R[s1]]: M[R[s1]] | R[s2]`) - Atomically ORs s2 with memory, returns original value
+    AMOOR_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
+    /// R: Atomic XOR Word (`R[d]: M[R[s1]], M[R[s1]]: M[R[s1]] ^ R[s2]`) - Atomically XORs s2 with memory, returns original value
+    AMOXOR_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
+    /// R: Atomic Max Word (`R[d]: M[R[s1]], M[R[s1]]: max(M[R[s1]], R[s2])`) - Atomically stores signed max, returns original value
+    AMOMAX_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
+    /// R: Atomic Min Word (`R[d]: M[R[s1]], M[R[s1]]: min(M[R[s1]], R[s2])`) - Atomically stores signed min, returns original value
+    AMOMIN_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
+    /// R: Atomic Max Unsigned Word (`R[d]: M[R[s1]], M[R[s1]]: maxu(M[R[s1]], R[s2])`) - Atomically stores unsigned max, returns original value
+    AMOMAXU_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
+    /// R: Atomic Min Unsigned Word (`R[d]: M[R[s1]], M[R[s1]]: minu(M[R[s1]], R[s2])`) - Atomically stores unsigned min, returns original value
+    AMOMINU_W { d: Reg, s1: Reg, s2: Reg, aqrl: AqRl },
 }
 
-impl PartialEq for I {
+impl PartialEq for I32 {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.into_u32() == other.into_u32()
     }
 }
 
-impl I {
+impl I32 {
     /// - funct7: 7
     /// - src2:   5
     /// - src1:   5
@@ -459,6 +438,22 @@ impl I {
         (funct3, s1, s2, im_signed)
     }
 
+    #[inline]
+    const fn amo(opcode: u32, rd: Reg, funct3: u32, rs1: Reg, rs2: Reg, aqrl: AqRl, funct5: u32) -> u32 {
+        (funct5 << 27) | ((aqrl.as_u32()) << 25) | ((rs2 as u32) << 20) | ((rs1 as u32) << 15) | (funct3 << 12) | ((rd as u32) << 7) | opcode
+    }
+
+    #[inline]
+    const fn from_amo(inst: u32) -> (Reg, u32, Reg, Reg, AqRl, u32) {
+        let rd = Reg::from_u32((inst >> 7) & 0x1f);
+        let funct3 = (inst >> 12) & 0x7;
+        let rs1 = Reg::from_u32((inst >> 15) & 0x1f);
+        let rs2 = Reg::from_u32((inst >> 20) & 0x1f);
+        let aqrl = AqRl::from_u32((inst >> 25) & 0x3);
+        let funct5 = (inst >> 27) & 0x1f;
+        (rd, funct3, rs1, rs2, aqrl, funct5)
+    }
+
     /// - im:    20 (simm20)
     /// - dst:    5
     /// - opcode: 7
@@ -575,46 +570,71 @@ impl I {
     #[inline]
     pub const fn into_u32(self) -> u32 {
         match self {
-            LUI { d, im }       => I::u(0b0110111,  d,     im),
-            AUIPC { d, im }     => I::u(0b0010111,  d,     im),
-            JAL { d, im }       => I::u(0b1101111,  d,     im),
-            JALR { d, s, im }   => I::i(0b1100111,  d,     0b000, s,    im),
-            BEQ { s1, s2, im }  => I::s(0b1100011,  0b000, s1,    s2,   im),
-            BNE { s1, s2, im }  => I::s(0b1100011,  0b001, s1,    s2,   im),
-            BLT { s1, s2, im }  => I::s(0b1100011,  0b100, s1,    s2,   im),
-            BGE { s1, s2, im }  => I::s(0b1100011,  0b101, s1,    s2,   im),
-            BLTU { s1, s2, im } => I::s(0b1100011,  0b110, s1,    s2,   im),
-            BGEU { s1, s2, im } => I::s(0b1100011,  0b111, s1,    s2,   im),
-            LB { d, s, im }     => I::i(0b0000011,  d,     0b000, s,  im),
-            LH { d, s, im }     => I::i(0b0000011,  d,     0b001, s,    im),
-            LW { d, s, im }     => I::i(0b0000011,  d,     0b010, s,    im),
-            LBU { d, s, im }    => I::i(0b0000011,  d,     0b100, s,    im),
-            LHU { d, s, im }    => I::i(0b0000011,  d,     0b101, s,    im),
-            ADDI { d, s, im }   => I::i(0b0010011,  d,     0b000, s,    im),
-            SLTI { d, s, im }   => I::i(0b0010011,  d,     0b010, s,    im),
-            SLTUI { d, s, im }  => I::i(0b0010011,  d,     0b011, s,    im),
-            XORI { d, s, im }   => I::i(0b0010011,  d,     0b100, s,    im),
-            ORI { d, s, im }    => I::i(0b0010011,  d,     0b110, s,    im),
-            ANDI { d, s, im }   => I::i(0b0010011,  d,     0b111, s,    im),
-            SLLI { d, s, im }   => I::i7(0b0010011, d,     0b001, s,    im, 0b0000000),
-            SRLI { d, s, im }   => I::i7(0b0010011, d,     0b101, s,    im, 0b0000000),
-            SRAI { d, s, im }   => I::i7(0b0010011, d,     0b101, s,    im, 0b0100000),
-            SB { s1, s2, im }   => I::s(0b0100011,  0b000, s1,    s2,   im),
-            SH { s1, s2, im }   => I::s(0b0100011,  0b001, s1,    s2,   im),
-            SW { s1, s2, im }   => I::s(0b0100011,  0b010, s1,    s2,   im),
-            ADD { d, s1, s2 }   => I::r(0b0110011,  d,     0b000, s1,   s2, 0b0000000),
-            SUB { d, s1, s2 }   => I::r(0b0110011,  d,     0b000, s1,   s2, 0b0100000),
-            SLL { d, s1, s2 }   => I::r(0b0110011,  d,     0b001, s1,   s2, 0b0000000),
-            SLT { d, s1, s2 }   => I::r(0b0110011,  d,     0b010, s1,   s2, 0b0000000),
-            SLTU { d, s1, s2 }  => I::r(0b0110011,  d,     0b011, s1,   s2, 0b0000000),
-            XOR { d, s1, s2 }   => I::r(0b0110011,  d,     0b100, s1,   s2, 0b0000000),
-            SRL { d, s1, s2 }   => I::r(0b0110011,  d,     0b101, s1,   s2, 0b0000000),
-            SRA { d, s1, s2 }   => I::r(0b0110011,  d,     0b101, s1,   s2, 0b0100000),
-            OR { d, s1, s2 }    => I::r(0b0110011,  d,     0b110, s1,   s2, 0b0000000),
-            AND { d, s1, s2 }   => I::r(0b0110011,  d,     0b111, s1,   s2, 0b0000000),
-            ECALL {}            => I::i(0b1110011,  ZERO,  0b000, ZERO, 0b000000000000),
-            EBREAK {}           => I::i(0b1110011,  ZERO,  0b000, ZERO, 0b000000000001),
-            FENCE { im }        => I::i(0b0001111,  ZERO,  0b000, ZERO, im),
+            LUI { d, im }       => I32::u(0b0110111,  d,     im),
+            AUIPC { d, im }     => I32::u(0b0010111,  d,     im),
+            JAL { d, im }       => I32::u(0b1101111,  d,     im),
+            JALR { d, s, im }   => I32::i(0b1100111,  d,     0b000, s,    im),
+            BEQ { s1, s2, im }  => I32::s(0b1100011,  0b000, s1,    s2,   im),
+            BNE { s1, s2, im }  => I32::s(0b1100011,  0b001, s1,    s2,   im),
+            BLT { s1, s2, im }  => I32::s(0b1100011,  0b100, s1,    s2,   im),
+            BGE { s1, s2, im }  => I32::s(0b1100011,  0b101, s1,    s2,   im),
+            BLTU { s1, s2, im } => I32::s(0b1100011,  0b110, s1,    s2,   im),
+            BGEU { s1, s2, im } => I32::s(0b1100011,  0b111, s1,    s2,   im),
+            LB { d, s, im }     => I32::i(0b0000011,  d,     0b000, s,    im),
+            LH { d, s, im }     => I32::i(0b0000011,  d,     0b001, s,    im),
+            LW { d, s, im }     => I32::i(0b0000011,  d,     0b010, s,    im),
+            LBU { d, s, im }    => I32::i(0b0000011,  d,     0b100, s,    im),
+            LHU { d, s, im }    => I32::i(0b0000011,  d,     0b101, s,    im),
+            SB { s1, s2, im }   => I32::s(0b0100011,  0b000, s1,    s2,   im),
+            SH { s1, s2, im }   => I32::s(0b0100011,  0b001, s1,    s2,   im),
+            SW { s1, s2, im }   => I32::s(0b0100011,  0b010, s1,    s2,   im),
+            ADDI { d, s, im }   => I32::i(0b0010011,  d,     0b000, s,    im),
+            SLTI { d, s, im }   => I32::i(0b0010011,  d,     0b010, s,    im),
+            SLTIU { d, s, im }  => I32::i(0b0010011,  d,     0b011, s,    im),
+            XORI { d, s, im }   => I32::i(0b0010011,  d,     0b100, s,    im),
+            ORI { d, s, im }    => I32::i(0b0010011,  d,     0b110, s,    im),
+            ANDI { d, s, im }   => I32::i(0b0010011,  d,     0b111, s,    im),
+            SLLI { d, s, im }   => I32::i7(0b0010011, d,     0b001, s,    im, 0b0000000),
+            SRLI { d, s, im }   => I32::i7(0b0010011, d,     0b101, s,    im, 0b0000000),
+            SRAI { d, s, im }   => I32::i7(0b0010011, d,     0b101, s,    im, 0b0100000),
+            ADD { d, s1, s2 }   => I32::r(0b0110011, d, 0b000, s1, s2, 0b0000000),
+            SUB { d, s1, s2 }   => I32::r(0b0110011, d, 0b000, s1, s2, 0b0100000),
+            SLL { d, s1, s2 }   => I32::r(0b0110011, d, 0b001, s1, s2, 0b0000000),
+            SLT { d, s1, s2 }   => I32::r(0b0110011, d, 0b010, s1, s2, 0b0000000),
+            SLTU { d, s1, s2 }  => I32::r(0b0110011, d, 0b011, s1, s2, 0b0000000),
+            XOR { d, s1, s2 }   => I32::r(0b0110011, d, 0b100, s1, s2, 0b0000000),
+            SRL { d, s1, s2 }   => I32::r(0b0110011, d, 0b101, s1, s2, 0b0000000),
+            SRA { d, s1, s2 }   => I32::r(0b0110011, d, 0b101, s1, s2, 0b0100000),
+            OR { d, s1, s2 }    => I32::r(0b0110011, d, 0b110, s1, s2, 0b0000000),
+            AND { d, s1, s2 }   => I32::r(0b0110011, d, 0b111, s1, s2, 0b0000000),
+            ECALL {}            => 0b00000000000000000000000001110011,
+            EBREAK {}           => 0b00000000000100000000000001110011,
+            FENCE { im }        => I32::i(0b0001111, ZERO, 0b000, ZERO, im),
+
+            // M-extension instructions
+            MUL { d, s1, s2 }    => I32::r(0b0110011, d, 0b000, s1, s2, 0b0000001),
+            MULH { d, s1, s2 }   => I32::r(0b0110011, d, 0b001, s1, s2, 0b0000001),
+            MULHSU { d, s1, s2 } => I32::r(0b0110011, d, 0b010, s1, s2, 0b0000001),
+            MULHU { d, s1, s2 }  => I32::r(0b0110011, d, 0b011, s1, s2, 0b0000001),
+            DIV { d, s1, s2 }    => I32::r(0b0110011, d, 0b100, s1, s2, 0b0000001),
+            DIVU { d, s1, s2 }   => I32::r(0b0110011, d, 0b101, s1, s2, 0b0000001),
+            REM { d, s1, s2 }    => I32::r(0b0110011, d, 0b110, s1, s2, 0b0000001),
+            REMU { d, s1, s2 }   => I32::r(0b0110011, d, 0b111, s1, s2, 0b0000001),
+
+            // A-extension Load-Reserved/Store-Conditional
+            LR_W { d, s1, aqrl }        => I32::amo(0b0101111, d, 0b010, s1, ZERO, aqrl, 0b00010),
+            SC_W { d, s1, s2, aqrl }    => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b00011),
+
+            // A-extension Atomic Memory Operations (32-bit)
+            AMOADD_W { d, s1, s2, aqrl }  => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b00000),
+            AMOSWAP_W { d, s1, s2, aqrl } => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b00001),
+            AMOAND_W { d, s1, s2, aqrl }  => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b01100),
+            AMOOR_W { d, s1, s2, aqrl }   => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b01000),
+            AMOXOR_W { d, s1, s2, aqrl }  => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b00100),
+            AMOMAX_W { d, s1, s2, aqrl }  => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b10100),
+            AMOMIN_W { d, s1, s2, aqrl }  => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b10000),
+            AMOMAXU_W { d, s1, s2, aqrl } => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b11100),
+            AMOMINU_W { d, s1, s2, aqrl } => I32::amo(0b0101111, d, 0b010, s1, s2, aqrl, 0b11000),
         }
     }
 
@@ -622,55 +642,76 @@ impl I {
     pub const fn try_from_u32(with: u32) -> Result<Self, ConversionError> {
         Ok(match with & 0b1111111 {
             // Load From RAM
-            0b0000011 => match I::from_i(with) {
+            0b0000011 => match I32::from_i(with) {
                 (d, 0b000, s, im) => LB { d, s, im },
                 (d, 0b001, s, im) => LH { d, s, im },
                 (d, 0b010, s, im) => LW { d, s, im },
                 (d, 0b100, s, im) => LBU { d, s, im },
                 (d, 0b101, s, im) => LHU { d, s, im },
-                (_, funct, _, _mm) => {
+                (_, funct, _, _) => {
                     return Err(ConversionError::UnknownFunct3(funct))
                 }
             },
             // Misc. Memory Instructions
-            0b0001111 => match I::from_i(with) {
+            0b0001111 => match I32::from_i(with) {
                 (_, 0b000, _, im) => FENCE { im },
-                (_, funct, _, _mm) => {
+                (_, funct, _, _) => {
                     return Err(ConversionError::UnknownFunct3(funct))
                 }
             },
-            // Store To RAM
-            0b0100011 => match I::from_s(with) {
-                (0b000, s1, s2, im) => SB { s1, s2, im },
-                (0b001, s1, s2, im) => SH { s1, s2, im },
-                (0b010, s1, s2, im) => SW { s1, s2, im },
-                (funct, _s, _z, _mm) => {
-                    return Err(ConversionError::UnknownFunct3(funct))
-                }
-            },
-            // Immediate Arithmetic
-            0b0010011 => match I::from_i(with) {
+            // Immediate Operations
+            0b0010011 => match I32::from_i(with) {
                 (d, 0b000, s, im) => ADDI { d, s, im },
                 (d, 0b010, s, im) => SLTI { d, s, im },
-                (d, 0b011, s, im) => SLTUI { d, s, im },
+                (d, 0b011, s, im) => SLTIU { d, s, im },
                 (d, 0b100, s, im) => XORI { d, s, im },
                 (d, 0b110, s, im) => ORI { d, s, im },
                 (d, 0b111, s, im) => ANDI { d, s, im },
-                _ => match I::from_i7(with) {
-                    (d, 0b001, s, im, 0b0000000) => SLLI { d, s, im },
-                    (d, 0b101, s, im, 0b0000000) => SRLI { d, s, im },
-                    (d, 0b101, s, im, 0b0100000) => SRAI { d, s, im },
-                    (_, funct, ..) => {
-                        return Err(ConversionError::UnknownFunct3(funct))
-                    }
+                (d, 0b001, s, im) => match (im >> 5) & 0b1111111 {
+                    0b0000000 => SLLI { d, s, im: im as i8 },
+                    _ => return Err(ConversionError::UnknownFunct7((im >> 5) as _))
                 },
+                (d, 0b101, s, im) => match (im >> 5) & 0b1111111 {
+                    0b0000000 => SRLI { d, s, im: im as i8 },
+                    0b0100000 => SRAI { d, s, im: im as i8 },
+                    _ => return Err(ConversionError::UnknownFunct7((im >> 5) as _))
+                },
+                (_, funct, _, _) => {
+                    return Err(ConversionError::UnknownFunct3(funct))
+                }
             },
-            // Add Upper Immediate To Program Counter
-            0b0010111 => match I::from_u(with) {
-                (d, im) => AUIPC { d, im },
+            // AUIPC
+            0b0010111 => match I32::from_u(with) {
+                (d, im) => AUIPC { d, im }
             },
-            // Register Arithmetic
-            0b0110011 => match I::from_r(with) {
+            // Store To RAM
+            0b0100011 => match I32::from_s(with) {
+                (0b000, s1, s2, im) => SB { s1, s2, im },
+                (0b001, s1, s2, im) => SH { s1, s2, im },
+                (0b010, s1, s2, im) => SW { s1, s2, im },
+                (funct, _, _, _) => {
+                    return Err(ConversionError::UnknownFunct3(funct))
+                }
+            },
+            // AMO (Atomic Memory Operations) - A-extension
+            0b0101111 => match I32::from_amo(with) {
+                (d, 0b010, s1, _, aqrl,  0b00010) => LR_W { d, s1, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b00011) => SC_W { d, s1, s2, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b00000) => AMOADD_W { d, s1, s2, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b00001) => AMOSWAP_W { d, s1, s2, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b01100) => AMOAND_W { d, s1, s2, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b01000) => AMOOR_W { d, s1, s2, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b00100) => AMOXOR_W { d, s1, s2, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b10100) => AMOMAX_W { d, s1, s2, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b10000) => AMOMIN_W { d, s1, s2, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b11100) => AMOMAXU_W { d, s1, s2, aqrl },
+                (d, 0b010, s1, s2, aqrl, 0b11000) => AMOMINU_W { d, s1, s2, aqrl },
+                (_, funct3, _, _, _, funct5) => {
+                    return Err(ConversionError::UnknownFunct3Funct5(funct3, funct5))
+                }
+            },
+            // Register Operations
+            0b0110011 => match I32::from_r(with) {
                 (d, 0b000, s1, s2, 0b0000000) => ADD { d, s1, s2 },
                 (d, 0b000, s1, s2, 0b0100000) => SUB { d, s1, s2 },
                 (d, 0b001, s1, s2, 0b0000000) => SLL { d, s1, s2 },
@@ -681,59 +722,66 @@ impl I {
                 (d, 0b101, s1, s2, 0b0100000) => SRA { d, s1, s2 },
                 (d, 0b110, s1, s2, 0b0000000) => OR { d, s1, s2 },
                 (d, 0b111, s1, s2, 0b0000000) => AND { d, s1, s2 },
-                (_, f3, _s, _z, f7) => {
-                    return Err(ConversionError::UnknownFunct3Funct7(
-                        f3, f7,
-                    ))
+                // M-extension instructions
+                (d, 0b000, s1, s2, 0b0000001) => MUL { d, s1, s2 },
+                (d, 0b001, s1, s2, 0b0000001) => MULH { d, s1, s2 },
+                (d, 0b010, s1, s2, 0b0000001) => MULHSU { d, s1, s2 },
+                (d, 0b011, s1, s2, 0b0000001) => MULHU { d, s1, s2 },
+                (d, 0b100, s1, s2, 0b0000001) => DIV { d, s1, s2 },
+                (d, 0b101, s1, s2, 0b0000001) => DIVU { d, s1, s2 },
+                (d, 0b110, s1, s2, 0b0000001) => REM { d, s1, s2 },
+                (d, 0b111, s1, s2, 0b0000001) => REMU { d, s1, s2 },
+                (_, funct3, _, _, funct7) => {
+                    return Err(ConversionError::UnknownFunct3Funct7(funct3, funct7))
                 }
             },
-            // Load upper immediate
-            0b0110111 => match I::from_u(with) {
-                (d, im) => LUI { d, im },
+            // LUI
+            0b0110111 => match I32::from_u(with) {
+                (d, im) => LUI { d, im }
             },
-            // Branch on Condition
-            0b1100011 => match I::from_s(with) {
+            // Branch Instructions
+            0b1100011 => match I32::from_s(with) {
                 (0b000, s1, s2, im) => BEQ { s1, s2, im },
                 (0b001, s1, s2, im) => BNE { s1, s2, im },
                 (0b100, s1, s2, im) => BLT { s1, s2, im },
                 (0b101, s1, s2, im) => BGE { s1, s2, im },
                 (0b110, s1, s2, im) => BLTU { s1, s2, im },
                 (0b111, s1, s2, im) => BGEU { s1, s2, im },
-                (funct, _s, _z, _mm) => {
+                (funct, _, _, _) => {
                     return Err(ConversionError::UnknownFunct3(funct))
                 }
             },
-            // Jump and link register
-            0b1100111 => match I::from_i(with) {
+            // JALR
+            0b1100111 => match I32::from_i(with) {
                 (d, 0b000, s, im) => JALR { d, s, im },
-                (_d, funct, _s, _im) => {
+                (_, funct, _, _) => {
                     return Err(ConversionError::UnknownFunct3(funct))
                 }
             },
-            // Jump and Link
-            0b1101111 => match I::from_u(with) {
+            // JAL
+            0b1101111 => match I32::from_u(with) {
                 (d, im) => JAL { d, im },
             },
-            // Transfer Control
-            0b1110011 => match I::from_i(with) {
-                (ZERO, 0b000, ZERO, 0b000000000000) => ECALL {},
-                (ZERO, 0b000, ZERO, 0b000000000001) => EBREAK {},
-                _ => return Err(ConversionError::UnknownEnvCtrlTransfer),
+            // System Instructions
+            0b1110011 => match with {
+                0b00000000000000000000000001110011 => ECALL {},
+                0b00000000000100000000000001110011 => EBREAK {},
+                _ => return Err(ConversionError::UnknownEnvCtrlTransfer)
             },
-            o => return Err(ConversionError::UnknownOpcode(o)),
+            _ => return Err(ConversionError::UnknownOpcode(with & 0b1111111))
         })
     }
 
 }
 
-impl From<I> for u32 {
+impl From<I32> for u32 {
     #[inline(always)]
-    fn from(with: I) -> Self {
-        I::into_u32(with)
+    fn from(with: I32) -> Self {
+        I32::into_u32(with)
     }
 }
 
-impl TryFrom<u32> for I {
+impl TryFrom<u32> for I32 {
     type Error = ConversionError;
     // Using match makes it easier to extend code in the future.
     #[allow(clippy::match_single_binding)]
@@ -749,29 +797,29 @@ mod tests {
     #[test]
     fn test_b_type_roundtrip() {
         // test positive offset
-        let encoded = I::b(0b1100011, 0b000, RA, SP, 0x100);
-        let (funct3, s1, s2, offset) = I::from_b(encoded);
+        let encoded = I32::b(0b1100011, 0b000, RA, SP, 0x100);
+        let (funct3, s1, s2, offset) = I32::from_b(encoded);
         assert_eq!(funct3, 0b000);
         assert_eq!(s1, RA);
         assert_eq!(s2, SP);
         assert_eq!(offset, 0x100);
 
         // Test negative offset
-        let encoded = I::b(0b1100011, 0b000, RA, SP, -256);
-        let (.., offset) = I::from_b(encoded);
+        let encoded = I32::b(0b1100011, 0b000, RA, SP, -256);
+        let (.., offset) = I32::from_b(encoded);
         assert_eq!(offset, -256);
 
         // test edge case: maximum positive 13-bit offset (4094, since LSB must be 0)
-        let encoded = I::b(0b1100011, 0b001, T0, T1, 4094);
-        let (funct3, s1, s2, offset) = I::from_b(encoded);
+        let encoded = I32::b(0b1100011, 0b001, T0, T1, 4094);
+        let (funct3, s1, s2, offset) = I32::from_b(encoded);
         assert_eq!(funct3, 0b001);
         assert_eq!(s1, T0);
         assert_eq!(s2, T1);
         assert_eq!(offset, 4094);
 
         // test edge case: maximum negative 13-bit offset (-4096)
-        let encoded = I::b(0b1100011, 0b111, A0, A1, -4096);
-        let (funct3, s1, s2, offset) = I::from_b(encoded);
+        let encoded = I32::b(0b1100011, 0b111, A0, A1, -4096);
+        let (funct3, s1, s2, offset) = I32::from_b(encoded);
         assert_eq!(funct3, 0b111);
         assert_eq!(s1, A0);
         assert_eq!(s2, A1);
@@ -793,21 +841,21 @@ mod tests {
         ];
 
         for &offset in &test_cases {
-            let encoded = I::j(0b1101111, RA, offset);
-            let (d, decoded_offset) = I::from_j(encoded);
+            let encoded = I32::j(0b1101111, RA, offset);
+            let (d, decoded_offset) = I32::from_j(encoded);
             assert_eq!(d, RA);
             assert_eq!(decoded_offset, offset, "Failed for offset {:#x} ({})", offset, offset);
         }
 
         // test edge case: maximum positive 21-bit offset (1048574, since LSB must be 0)
-        let encoded = I::j(0b1101111, T6, 1048574);
-        let (d, offset) = I::from_j(encoded);
+        let encoded = I32::j(0b1101111, T6, 1048574);
+        let (d, offset) = I32::from_j(encoded);
         assert_eq!(d, T6);
         assert_eq!(offset, 1048574);
 
         // test edge case: maximum negative 21-bit offset (-1048576)
-        let encoded = I::j(0b1101111, S11, -1048576);
-        let (d, offset) = I::from_j(encoded);
+        let encoded = I32::j(0b1101111, S11, -1048576);
+        let (d, offset) = I32::from_j(encoded);
         assert_eq!(d, S11);
         assert_eq!(offset, -1048576);
     }
@@ -824,8 +872,8 @@ mod tests {
 
         for &(rd, rs1, rs2) in &test_cases {
             // test ADD (funct7=0b0000000, funct3=0b000)
-            let encoded = I::r(0b0110011, rd, 0b000, rs1, rs2, 0b0000000);
-            let (d, funct3, s1, s2, funct7) = I::from_r(encoded);
+            let encoded = I32::r(0b0110011, rd, 0b000, rs1, rs2, 0b0000000);
+            let (d, funct3, s1, s2, funct7) = I32::from_r(encoded);
             assert_eq!(d, rd);
             assert_eq!(funct3, 0b000);
             assert_eq!(s1, rs1);
@@ -833,8 +881,8 @@ mod tests {
             assert_eq!(funct7, 0b0000000);
 
             // test SUB (funct7=0b0100000, funct3=0b000)
-            let encoded = I::r(0b0110011, rd, 0b000, rs1, rs2, 0b0100000);
-            let (d, funct3, s1, s2, funct7) = I::from_r(encoded);
+            let encoded = I32::r(0b0110011, rd, 0b000, rs1, rs2, 0b0100000);
+            let (d, funct3, s1, s2, funct7) = I32::from_r(encoded);
             assert_eq!(d, rd);
             assert_eq!(funct3, 0b000);
             assert_eq!(s1, rs1);
@@ -856,16 +904,16 @@ mod tests {
 
         for &(rd, rs1, imm) in &test_cases {
             // test ADDI (funct3=0b000)
-            let encoded = I::i(0b0010011, rd, 0b000, rs1, imm);
-            let (d, funct3, s1, decoded_imm) = I::from_i(encoded);
+            let encoded = I32::i(0b0010011, rd, 0b000, rs1, imm);
+            let (d, funct3, s1, decoded_imm) = I32::from_i(encoded);
             assert_eq!(d, rd);
             assert_eq!(funct3, 0b000);
             assert_eq!(s1, rs1);
             assert_eq!(decoded_imm, imm);
 
             // test LW (funct3=0b010)
-            let encoded = I::i(0b0000011, rd, 0b010, rs1, imm);
-            let (d, funct3, s1, decoded_imm) = I::from_i(encoded);
+            let encoded = I32::i(0b0000011, rd, 0b010, rs1, imm);
+            let (d, funct3, s1, decoded_imm) = I32::from_i(encoded);
             assert_eq!(d, rd);
             assert_eq!(funct3, 0b010);
             assert_eq!(s1, rs1);
@@ -885,8 +933,8 @@ mod tests {
 
         for &(rd, rs1, shamt) in &test_cases {
             // test SLLI (funct7=0b0000000, funct3=0b001)
-            let encoded = I::i7(0b0010011, rd, 0b001, rs1, shamt, 0b0000000);
-            let (d, funct3, s1, decoded_shamt, funct7) = I::from_i7(encoded);
+            let encoded = I32::i7(0b0010011, rd, 0b001, rs1, shamt, 0b0000000);
+            let (d, funct3, s1, decoded_shamt, funct7) = I32::from_i7(encoded);
             assert_eq!(d, rd);
             assert_eq!(funct3, 0b001);
             assert_eq!(s1, rs1);
@@ -894,8 +942,8 @@ mod tests {
             assert_eq!(funct7, 0b0000000);
 
             // test SRAI (funct7=0b0100000, funct3=0b101)
-            let encoded = I::i7(0b0010011, rd, 0b101, rs1, shamt, 0b0100000);
-            let (d, funct3, s1, decoded_shamt, funct7) = I::from_i7(encoded);
+            let encoded = I32::i7(0b0010011, rd, 0b101, rs1, shamt, 0b0100000);
+            let (d, funct3, s1, decoded_shamt, funct7) = I32::from_i7(encoded);
             assert_eq!(d, rd);
             assert_eq!(funct3, 0b101);
             assert_eq!(s1, rs1);
@@ -917,16 +965,16 @@ mod tests {
 
         for &(rs1, rs2, imm) in &test_cases {
             // test SW (funct3=0b010)
-            let encoded = I::s(0b0100011, 0b010, rs1, rs2, imm);
-            let (funct3, s1, s2, decoded_imm) = I::from_s(encoded);
+            let encoded = I32::s(0b0100011, 0b010, rs1, rs2, imm);
+            let (funct3, s1, s2, decoded_imm) = I32::from_s(encoded);
             assert_eq!(funct3, 0b010);
             assert_eq!(s1, rs1);
             assert_eq!(s2, rs2);
             assert_eq!(decoded_imm, imm);
 
             // test SB (funct3=0b000)
-            let encoded = I::s(0b0100011, 0b000, rs1, rs2, imm);
-            let (funct3, s1, s2, decoded_imm) = I::from_s(encoded);
+            let encoded = I32::s(0b0100011, 0b000, rs1, rs2, imm);
+            let (funct3, s1, s2, decoded_imm) = I32::from_s(encoded);
             assert_eq!(funct3, 0b000);
             assert_eq!(s1, rs1);
             assert_eq!(s2, rs2);
@@ -937,23 +985,23 @@ mod tests {
     #[test]
     fn test_sign_extension_u_type() {
         // test positive values
-        let encoded = I::u(0b0110111, T0, 0x12345);
-        let (_, decoded) = I::from_u(encoded);
+        let encoded = I32::u(0b0110111, T0, 0x12345);
+        let (_, decoded) = I32::from_u(encoded);
         assert_eq!(decoded, 0x12345);
 
         // test negative values (LUI/AUIPC usage often uses signed semantics)
-        let encoded = I::u(0b0110111, T0, -1);
-        let (_, decoded) = I::from_u(encoded);
+        let encoded = I32::u(0b0110111, T0, -1);
+        let (_, decoded) = I32::from_u(encoded);
         assert_eq!(decoded, -1);
 
         // test positive boundary (max positive signed 20-bit)
-        let encoded = I::u(0b0110111, T0, 0x7FFFF); // 524_287
-        let (_, decoded) = I::from_u(encoded);
+        let encoded = I32::u(0b0110111, T0, 0x7FFFF); // 524_287
+        let (_, decoded) = I32::from_u(encoded);
         assert_eq!(decoded, 0x7FFFF);
 
         // test sign bit boundary (bit 19 set => smallest negative)
-        let encoded = I::u(0b0110111, T0, -524_288); // -2^19
-        let (_, decoded) = I::from_u(encoded);
+        let encoded = I32::u(0b0110111, T0, -524_288); // -2^19
+        let (_, decoded) = I32::from_u(encoded);
         assert_eq!(decoded, -524_288);
     }
 
@@ -972,8 +1020,8 @@ mod tests {
 
         // test that all 32 registers encode/decode correctly
         for (i, &reg) in all_regs.iter().enumerate() {
-            let encoded = I::r(0b0110011, reg, 0b000, ZERO, ZERO, 0b0000000);
-            let (d, .., _) = I::from_r(encoded);
+            let encoded = I32::r(0b0110011, reg, 0b000, ZERO, ZERO, 0b0000000);
+            let (d, .., _) = I32::from_r(encoded);
             assert_eq!(d, reg);
             assert_eq!(reg as u32, i as u32);
         }
@@ -988,8 +1036,8 @@ mod tests {
         ];
 
         for &imm in &i_boundary_tests {
-            let encoded = I::i(0b0010011, T0, 0b000, T1, imm);
-            let (.., decoded_imm) = I::from_i(encoded);
+            let encoded = I32::i(0b0010011, T0, 0b000, T1, imm);
+            let (.., decoded_imm) = I32::from_i(encoded);
             assert_eq!(decoded_imm, imm);
         }
     }
@@ -998,7 +1046,7 @@ mod tests {
     fn debug_j_type_no_std() {
         let offset = 0x1000i32; // 4096
 
-        let encoded = I::j(0b1101111, RA, offset);
+        let encoded = I32::j(0b1101111, RA, offset);
 
         // let's manually check the bit fields
         let imm_bits_31 = (encoded >> 31) & 0x1;
@@ -1006,7 +1054,7 @@ mod tests {
         let imm_bit_20 = (encoded >> 20) & 0x1;
         let imm_bits_19_12 = (encoded >> 12) & 0xFF;
 
-        let (d, decoded_offset) = I::from_j(encoded);
+        let (d, decoded_offset) = I32::from_j(encoded);
 
         assert_eq!(d, RA);
 
@@ -1025,44 +1073,44 @@ mod tests {
     #[test]
     fn test_sign_extension_i_type() {
         // test positive values
-        let encoded = I::i(0b0010011, T0, 0b000, T1, 100);
-        let (.., decoded) = I::from_i(encoded);
+        let encoded = I32::i(0b0010011, T0, 0b000, T1, 100);
+        let (.., decoded) = I32::from_i(encoded);
         assert_eq!(decoded, 100);
 
         // test negative values
-        let encoded = I::i(0b0010011, T0, 0b000, T1, -50);
-        let (.., decoded) = I::from_i(encoded);
+        let encoded = I32::i(0b0010011, T0, 0b000, T1, -50);
+        let (.., decoded) = I32::from_i(encoded);
         assert_eq!(decoded, -50);
 
         // test boundary values
-        let encoded = I::i(0b0010011, T0, 0b000, T1, 2047);  // max positive 12-bit
-        let (.., decoded) = I::from_i(encoded);
+        let encoded = I32::i(0b0010011, T0, 0b000, T1, 2047);  // max positive 12-bit
+        let (.., decoded) = I32::from_i(encoded);
         assert_eq!(decoded, 2047);
 
-        let encoded = I::i(0b0010011, T0, 0b000, T1, -2048); // max negative 12-bit
-        let (.., decoded) = I::from_i(encoded);
+        let encoded = I32::i(0b0010011, T0, 0b000, T1, -2048); // max negative 12-bit
+        let (.., decoded) = I32::from_i(encoded);
         assert_eq!(decoded, -2048);
     }
 
     #[test]
     fn test_sign_extension_s_type() {
         // test positive values
-        let encoded = I::s(0b0100011, 0b010, T0, T1, 100);
-        let (.., decoded) = I::from_s(encoded);
+        let encoded = I32::s(0b0100011, 0b010, T0, T1, 100);
+        let (.., decoded) = I32::from_s(encoded);
         assert_eq!(decoded, 100);
 
         // test negative values
-        let encoded = I::s(0b0100011, 0b010, T0, T1, -50);
-        let (.., decoded) = I::from_s(encoded);
+        let encoded = I32::s(0b0100011, 0b010, T0, T1, -50);
+        let (.., decoded) = I32::from_s(encoded);
         assert_eq!(decoded, -50);
 
         // test boundary values
-        let encoded = I::s(0b0100011, 0b010, T0, T1, 2047);
-        let (.., decoded) = I::from_s(encoded);
+        let encoded = I32::s(0b0100011, 0b010, T0, T1, 2047);
+        let (.., decoded) = I32::from_s(encoded);
         assert_eq!(decoded, 2047);
 
-        let encoded = I::s(0b0100011, 0b010, T0, T1, -2048);
-        let (.., decoded) = I::from_s(encoded);
+        let encoded = I32::s(0b0100011, 0b010, T0, T1, -2048);
+        let (.., decoded) = I32::from_s(encoded);
         assert_eq!(decoded, -2048);
     }
 
@@ -1079,14 +1127,14 @@ mod tests {
 
         for &(rd, imm) in &test_cases {
             // test LUI
-            let encoded = I::u(0b0110111, rd, imm);
-            let (d, decoded_imm) = I::from_u(encoded);
+            let encoded = I32::u(0b0110111, rd, imm);
+            let (d, decoded_imm) = I32::from_u(encoded);
             assert_eq!(d, rd);
             assert_eq!(decoded_imm, imm);
 
             // test AUIPC
-            let encoded = I::u(0b0010111, rd, imm);
-            let (d, decoded_imm) = I::from_u(encoded);
+            let encoded = I32::u(0b0010111, rd, imm);
+            let (d, decoded_imm) = I32::from_u(encoded);
             assert_eq!(d, rd);
             assert_eq!(decoded_imm, imm);
         }
