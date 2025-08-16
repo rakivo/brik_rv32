@@ -1,6 +1,6 @@
 [package]
 name = "brik_rv32"
-version = "0.2.0"
+version = "0.2.1"
 license = "Apache-2.0 OR BSL-1.0 OR MIT"
 description = "RISC-V Assembly Encoder / Decoder."
 repository = "https://github.com/rakivo/brik_rv32"

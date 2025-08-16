@@ -439,12 +439,18 @@ impl I32 {
     }
 
     #[inline]
-    const fn amo(opcode: u32, rd: Reg, funct3: u32, rs1: Reg, rs2: Reg, aqrl: AqRl, funct5: u32) -> u32 {
-        (funct5 << 27) | ((aqrl.as_u32()) << 25) | ((rs2 as u32) << 20) | ((rs1 as u32) << 15) | (funct3 << 12) | ((rd as u32) << 7) | opcode
+    pub const fn amo(opcode: u32, rd: Reg, funct3: u32, rs1: Reg, rs2: Reg, aqrl: AqRl, funct5: u32) -> u32 {
+        (funct5 << 27) |
+        ((aqrl.as_u32()) << 25) |
+        ((rs2 as u32) << 20) |
+        ((rs1 as u32) << 15) |
+        (funct3 << 12) |
+        ((rd as u32) << 7) |
+        opcode
     }
 
     #[inline]
-    const fn from_amo(inst: u32) -> (Reg, u32, Reg, Reg, AqRl, u32) {
+    pub const fn from_amo(inst: u32) -> (Reg, u32, Reg, Reg, AqRl, u32) {
         let rd = Reg::from_u32((inst >> 7) & 0x1f);
         let funct3 = (inst >> 12) & 0x7;
         let rs1 = Reg::from_u32((inst >> 15) & 0x1f);
