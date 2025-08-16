@@ -155,6 +155,11 @@ impl AqRl {
 }
 
 /// An assembly instruction (im is limited to 12 bits)
+///
+/// SLLI, SRLI, SRAI, SLL, SRL, SRA variants do not enforce a specific shift amount (shamt) range encoding/decoding.
+/// For RV32: valid shamt is 0–31 (immediate) or lower 5 bits of rs2 (register shift).
+/// For RV64: valid shamt is 0–63 (immediate) or lower 6 bits of rs2 (register shift).
+/// This means a single enum variant can encode both RV32 and RV64 forms.
 #[allow(clippy::enum_variant_names)]
 #[allow(non_camel_case_types)]
 #[allow(missing_docs)]
